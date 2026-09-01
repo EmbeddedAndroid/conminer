@@ -1,0 +1,292 @@
+# conminer — production compose stack (§9, §16 "Compose-level defaults")
+#
+#   discoveryd  watches /dev/serial/by-id, owns registry.json, writes ser2net.yaml
+#   ser2net     stock upstream, config fully generated — the multi-consumer point
+#   minerd      live capture + framing + Drain + SQLite, plus file-ingest workers
+#   mcpd        MCP server (streamable HTTP on :8090, stdio via `docker exec`)
+#
+# Image tags are pinned (never `latest`); each service gets a memory limit so a
+# leak OOMs one service and not the host.
+
+x-conminer-image: &conminer-image
+  image: conminer:0.2.0
+  build:
+    context: .
+    target: runtime
+    args:
+      PROFILE: release
+      # THE FINGERPRINT MUST SURVIVE `up --build`.
+      #
+      # `./cm image` passed CONMINER_BUILD as a --build-arg, but `./cm up` runs
+      # `up -d --build`, which rebuilt the same image from these args alone --
+      # so it fell back to the Dockerfile default and the running services
+      # reported `build: unknown`. Deploying erased the one field that detects
+      # version skew across the fleet.
+      CONMINER_BUILD: ${CONMINER_BUILD:-unknown}
+
+x-common: &common
+  restart: unless-stopped
+  environment:
+    CONMINER_CONFIG: /etc/conminer/conminer.toml
+    CONMINER_DATA: /var/lib/conminer
+    CONMINER_PROFILES: /etc/conminer/profiles.d
+    RUST_LOG: ${CONMINER_LOG_LEVEL:-info}
+  volumes:
+    - conminer-data:/var/lib/conminer
+    - conminer-run:/run/conminer
+    - ./profiles.d:/etc/conminer/profiles.d:ro
+    - ./conminer.toml:/etc/conminer/conminer.toml:ro
+    - ./selftest.toml:/etc/conminer/selftest.toml:ro
+  networks:
+    - conminer
+
+services:
+  discoveryd:
+    <<: [*conminer-image, *common]
+    container_name: conminer-discoveryd
+    command: ["discoveryd"]
+    # udev netlink inside the container needs /dev and /run/udev (§3);
+    # falls back to 1 Hz polling of /dev/serial/by-id when unavailable (§11).
+    volumes:
+      - conminer-data:/var/lib/conminer
+      - conminer-run:/run/conminer
+      - ./profiles.d:/etc/conminer/profiles.d:ro
+      - ./conminer.toml:/etc/conminer/conminer.toml:ro
+      - ./selftest.toml:/etc/conminer/selftest.toml:ro
+      - /dev:/dev
+      - /run/udev:/run/udev:ro
+    device_cgroup_rules:
+      # ttyUSB* (188), ttyACM* (166), ttyS* (4) — scoped by discovery.include globs
+      - 'c 188:* rmw'
+      - 'c 166:* rmw'
+      - 'c 4:* rmw'
+      # usbfs (189). discoveryd reattaches ftdi_sio when a tool detaches it and
+      # leaves a console missing; that is a usbfs ioctl, not a tty write. Without
+      # this the recovery cannot open /dev/bus/usb/<bus>/<addr> at all and a
+      # console stays gone after every power-off.
+      - 'c 189:* rmw'
+    # Small services, but 128 m was the number that got mcpd killed on a bigger
+    # one. Ceilings are free until they are hit; 512 m costs nothing here.
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "conminer", "healthcheck", "--service", "discoveryd"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  ser2net:
+    <<: [*conminer-image, *common]
+    container_name: conminer-ser2net
+    # Runs stock upstream ser2net against the generated config; conminer's
+    # `ser2net-supervisor` subcommand handles SIGHUP reload on registry change.
+    command: ["ser2net-supervisor"]
+    volumes:
+      - conminer-data:/var/lib/conminer
+      - conminer-run:/run/conminer
+      - ./conminer.toml:/etc/conminer/conminer.toml:ro
+      - ./selftest.toml:/etc/conminer/selftest.toml:ro
+      - /dev:/dev
+    device_cgroup_rules:
+      - 'c 188:* rmw'
+      - 'c 166:* rmw'
+      - 'c 4:* rmw'
+    depends_on:
+      discoveryd:
+        condition: service_healthy
+    # Small services, but 128 m was the number that got mcpd killed on a bigger
+    # one. Ceilings are free until they are hit; 512 m costs nothing here.
+    mem_limit: 512m
+    ports:
+      # Per-device TCP endpoints, base_port 5001 (§16)
+      - "${CONMINER_SER2NET_BIND:-127.0.0.1}:5001-5032:5001-5032"
+    healthcheck:
+      test: ["CMD", "conminer", "healthcheck", "--service", "ser2net"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  minerd:
+    <<: [*conminer-image, *common]
+    container_name: conminer-minerd
+    environment:
+      CONMINER_CONFIG: /etc/conminer/conminer.toml
+      CONMINER_DATA: /var/lib/conminer
+      CONMINER_PROFILES: /etc/conminer/profiles.d
+      RUST_LOG: ${CONMINER_LOG_LEVEL:-info}
+      # ser2net is a sibling container: 127.0.0.1 here is minerd itself.
+      CONMINER_SER2NET_HOST: ser2net
+    command: ["minerd"]
+    depends_on:
+      ser2net:
+        condition: service_healthy
+    # Measured at 498/512 MB (97%) with the bench's stores warm -- one console
+    # burst from being killed the same way mcpd was. The miner holds a ring
+    # buffer, a Drain tree and a 64 MB SQLite page cache for EVERY device on the
+    # bench, so its ceiling is ~18 x 64 MB of cache plus the rest: call it 2 GB
+    # in the worst case, and give it double that so growth is never a surprise.
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD", "conminer", "healthcheck", "--service", "minerd"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # §P1. FLEET PEERING. Its own service for one reason: multicast and broadcast
+  # do not cross a docker bridge, so this is the only container that needs the
+  # host's network. Giving mcpd or minerd host networking to save a service
+  # would hand the host's stack to the processes that touch boards; a beacon is
+  # a postcard and gets the smaller blast radius.
+  #
+  # FLEET PREREQUISITES (both loopback-bound by default, deliberately):
+  #   * mcpd must be reachable by peers   -> CONMINER_MCP_BIND=0.0.0.0
+  #   * ser2net must be reachable by peers -> CONMINER_SER2NET_BIND=0.0.0.0
+  # Both are LAN-trust decisions, consistent with the dashboard already being
+  # LAN-open by choice. A single-node install needs neither.
+  peerd:
+    image: conminer:${CONMINER_VERSION:-0.2.0}
+    container_name: conminer-peerd
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      RUST_LOG: ${CONMINER_LOG_LEVEL:-info}
+      CONMINER_PEERS_ENABLED: ${CONMINER_PEERS_ENABLED:-true}
+      CONMINER_PEERS_NAME: ${CONMINER_PEERS_NAME:-}
+      CONMINER_PEERS_ADVERTISE_HOST: ${CONMINER_PEERS_ADVERTISE_HOST:-}
+      # Comma-separated mcpd URLs. The only discovery that crosses a subnet
+      # broadcast cannot -- which is exactly the NAT-ed-host-to-lab-host case.
+      CONMINER_PEERS_NODES: ${CONMINER_PEERS_NODES:-}
+    command: ["peerd"]
+    volumes:
+      - conminer-data:/var/lib/conminer
+      - ./conminer.toml:/etc/conminer/conminer.toml:ro
+    mem_limit: 512m
+
+  mcpd:
+    <<: [*conminer-image, *common]
+    container_name: conminer-mcpd
+    command: ["mcpd"]
+    environment:
+      CONMINER_CONFIG: /etc/conminer/conminer.toml
+      CONMINER_DATA: /var/lib/conminer
+      CONMINER_PROFILES: /etc/conminer/profiles.d
+      RUST_LOG: ${CONMINER_LOG_LEVEL:-info}
+      # Bind the container's own interfaces, not its loopback. The default of
+      # 127.0.0.1 is right for a bare-metal install and wrong here: the
+      # container boundary is the isolation, and the `ports:` rule below is what
+      # decides host exposure. Loopback-only also cuts off dashd, which reaches
+      # mcpd over the compose network for its hardware buttons.
+      CONMINER_MCPD_BIND: 0.0.0.0
+      # mcpd reaches the consoles too (run_command, send, follow's prompt
+      # checks), so it needs the same sibling-container address as minerd.
+      CONMINER_SER2NET_HOST: ser2net
+      # §H2. THIS RIG'S retention policy, and it must live HERE rather than in
+      # the `x-common` anchor: a service that declares its own `environment:`
+      # REPLACES the anchor's outright -- YAML merge keys do not deep-merge a
+      # mapping. Put in the anchor it silently reached only discoveryd, which
+      # does not read it, and `stats` went on reporting `armed: false` after a
+      # clean deploy. mcpd is the service that answers `stats` and runs `prune`,
+      # so this is the one that has to carry it.
+      #
+      # The compiled defaults stay OFF on purpose: a host that has been
+      # capturing for a month must not start discarding bytes because it was
+      # upgraded. A deployment is the right place to say "30 days, 512 MB".
+      #
+      # SETTING THESE DELETES NOTHING. There is no background sweep; raw bytes
+      # go only when `prune` is called, and these are what it takes when called
+      # bare. What changes today is that `stats.retention` can finally answer
+      # "will anything ever reclaim this?" with something other than "no".
+      CONMINER_RETENTION_RAW_KEEP_DAYS: ${CONMINER_RETENTION_RAW_KEEP_DAYS:-30}
+      CONMINER_RETENTION_RAW_KEEP_BYTES: ${CONMINER_RETENTION_RAW_KEEP_BYTES:-536870912}
+    depends_on:
+      minerd:
+        condition: service_healthy
+    # MEASURED, not guessed. 128 m was set when the largest thing mcpd built was
+    # a template listing; it now assembles multi-megabyte answers -- a `dmesg`
+    # snapshot alone is capped at 4 MB (§H1), and a `follow` scans up to 50,000
+    # lines. On 2026-08-13 a selftest against the ADP (the bench's biggest store)
+    # pushed it to ~130 MB and the kernel OOM-killed it MID-RUN: the caller got
+    # an empty body rather than an error, and the board was left powered with a
+    # lease because a killed process cannot run its own cleanup.
+    #
+    # Headroom, deliberately generous: these are ceilings, not reservations, and
+    # being surprised by an OOM costs a whole hardware run. A 15 GB host can
+    # afford to never think about this again.
+    mem_limit: 2g
+    # mcpd is where power/flash hooks run, so it needs the board controller and
+    # the hook script. The controller is deliberately excluded from discovery:
+    # its command processor is single-session, so ser2net must never hold it.
+    volumes:
+      - conminer-data:/var/lib/conminer
+      - conminer-run:/run/conminer
+      - ./profiles.d:/etc/conminer/profiles.d:ro
+      - ./conminer.toml:/etc/conminer/conminer.toml:ro
+      - ./selftest.toml:/etc/conminer/selftest.toml:ro
+      - ./tools/bantam-power:/usr/local/bin/bantam-power:ro
+      # Exports and ingest land here, so a session archive written by a tool call
+      # is retrievable from the host without `docker cp`. A bare filename passed
+      # to export_session/ingest_file resolves into this directory.
+      - ./exports:/exports
+      - /dev:/dev
+    device_cgroup_rules:
+      - 'c 166:* rmw'   # ttyACM* — the Bantam controller
+      # usbfs (189). A Bughopper-class controller drives power/reset/EDL by FTDI
+      # CBUS bit-bang, which is a USB control transfer, not a tty write: without
+      # this the open fails with "Operation not permitted" even though
+      # /dev/bus/usb is visible in the container.
+      - 'c 189:* rmw'
+    ports:
+      # §14.1: binds loopback by default; widening is a one-line change here.
+      - "${CONMINER_MCP_BIND:-127.0.0.1}:8090:8090"
+      - "${CONMINER_METRICS_BIND:-127.0.0.1}:9090:9090"
+    healthcheck:
+      test: ["CMD", "conminer", "healthcheck", "--service", "mcpd"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # The human dashboard (§17). Its own service and its own port, so a host that
+  # should serve only agents simply does not start it. It streams a console
+  # straight to a browser and can transmit, which is why it is opt-out here
+  # rather than folded into mcpd.
+  dashd:
+    <<: [*conminer-image, *common]
+    container_name: conminer-dashd
+    command: ["dashd"]
+    environment:
+      CONMINER_CONFIG: /etc/conminer/conminer.toml
+      CONMINER_DATA: /var/lib/conminer
+      CONMINER_PROFILES: /etc/conminer/profiles.d
+      RUST_LOG: ${CONMINER_LOG_LEVEL:-info}
+      # ser2net is a sibling container: 127.0.0.1 here is dashd itself, which
+      # the browser sees as "Connection refused" on every console.
+      CONMINER_SER2NET_HOST: ser2net
+    depends_on:
+      ser2net:
+        condition: service_started
+    # Small services, but 128 m was the number that got mcpd killed on a bigger
+    # one. Ceilings are free until they are hit; 512 m costs nothing here.
+    mem_limit: 512m
+    ports:
+      # Open on the lab network by design: this is the surface humans use from
+      # a laptop. Narrow it here if that is not what you want.
+      - "${CONMINER_DASH_BIND:-0.0.0.0}:8080:8080"
+    healthcheck:
+      test: ["CMD", "conminer", "healthcheck", "--service", "dashd"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  conminer-data:
+    name: conminer-data
+  conminer-run:
+    name: conminer-run
+
+networks:
+  conminer:
+    name: conminer

@@ -1,0 +1,261 @@
+#!/bin/sh
+# conminer power / boot-mode hook for the IQ10's Bantam ("Karussell") controller.
+#
+# The Bantam exposes a line-oriented command processor on its CDC ACM port at
+# 115200 8N1:
+#
+#   <SIGNAL> <0|1|?>   set or query a GPIO / IO_EXP line
+#   <SEQUENCE>         run a firmware-choreographed boot sequence
+#   *IDN?              identity
+#   help [<group>]     list groups / a group's signals
+#
+# Three properties of that processor drive this script, each learned from the
+# hardware rather than assumed:
+#
+#   * **Single-session.** The lab's own driver notes that "concurrent opens of
+#     /dev/ttyACM* corrupt each other", so this takes a lock for the whole
+#     transaction and the controller is kept out of conminer's discovery so
+#     ser2net never holds it.
+#   * **Set commands are silent.** `KK_RESIN_N 1` returns nothing; `KK_RESIN_N ?`
+#     returns `0`. So a set is verified by *reading the signal back*, not by
+#     waiting for an acknowledgement that never comes.
+#   * **`read -t` does not work on this tty.** Identical commands return nothing
+#     through shell `read` and correct values through a bounded `cat` drain.
+#
+# Usage:  bantam-power <on|off|cycle|reset|id|state> --port <dev> [--settle N]
+#         bantam-power mode <BOOT_MD_EDL|BOOT_UEFI|MD_FASTBOOT|...> --port <dev>
+#         bantam-power get <SIGNAL> | set <SIGNAL> <0|1>
+set -eu
+
+die() { echo "bantam-power: $*" >&2; exit 1; }
+
+# NO DEFAULT PORT. This is a safety property, not a convenience trade-off.
+#
+# This used to default to /dev/ttyACM0, and the caller's templates did not pass a
+# port at all, so EVERY invocation drove whichever board happened to sit there.
+# Measured on the bench: asking conminer to power off the RIDE powered off the
+# IQ10 (RIDE PS_HOLD stayed 1, IQ10 went 1->0), and the dashboard's power-off on
+# the Bughopper board did the same -- both reporting ok:true verified:true,
+# because the board that DID get hit read its line back correctly.
+#
+# The controller port is the identity of the board being actuated. Guessing it is
+# never safe, so refuse instead.
+#
+# Pre-scanned here, before anything opens a device, because the option parser
+# below runs after the lock and stty have already touched $PORT.
+PORT="${BANTAM_PORT:-}"
+_prev=""
+for _arg in "$@"; do
+    [ "$_prev" = "--port" ] && PORT="$_arg"
+    _prev="$_arg"
+done
+[ -n "$PORT" ] || die "no controller port: pass --port <dev> (or set BANTAM_PORT). \
+Refusing to guess which board to actuate"
+
+HOLD="${BANTAM_HOLD:-0.3}"
+OFF_SETTLE="${BANTAM_OFF_SETTLE:-6}"
+LOCK="/run/conminer/bantam.lock"
+FAILED=0
+
+[ -e "$PORT" ] || die "no controller at $PORT"
+mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
+
+# Serialize. The lock records its owner's pid: conminer enforces a hook timeout,
+# and a timed-out hook is killed without running its trap, so a lock whose owner
+# is gone must be breakable or one timeout wedges power control permanently.
+acquired=""
+i=0
+while [ "$i" -lt 100 ]; do
+    if mkdir "$LOCK" 2>/dev/null; then
+        echo $$ > "$LOCK/pid" 2>/dev/null || true
+        acquired=1; break
+    fi
+    owner=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+        echo "bantam-power: breaking stale lock from dead pid $owner" >&2
+        rm -rf "$LOCK" 2>/dev/null || true; continue
+    fi
+    if [ -z "$owner" ] && [ "$i" -gt 20 ]; then
+        echo "bantam-power: breaking lock with no owner" >&2
+        rm -rf "$LOCK" 2>/dev/null || true; continue
+    fi
+    sleep 0.1; i=$((i + 1))
+done
+[ -n "$acquired" ] || die "another action is already driving $PORT"
+# shellcheck disable=SC2064
+trap "rm -rf '$LOCK' 2>/dev/null || true" EXIT INT TERM
+
+# min 1 time 0 == block until at least one byte. The reply deadline is enforced
+# by `timeout` around the reader instead of by VTIME, because VTIME makes a
+# silent tty look like EOF and `cat` then exits *before* the controller has
+# answered -- which reads as "the signal is unreadable" rather than "wait
+# longer".
+stty -F "$PORT" 115200 cs8 -cstopb -parenb raw -echo min 1 time 0 2>/dev/null \
+    || die "could not configure $PORT"
+
+# NO long-lived `exec 3<>"$PORT"` here, deliberately, and this is load-bearing.
+#
+# Holding a bidirectional (O_RDWR) descriptor on this tty makes every subsequent
+# read return EOF inside the container, while writes on it still reach the
+# hardware -- so commands took effect and their replies vanished. Measured back
+# to back on the RIDE's Karussell, same second, same device:
+#
+#   with `exec 3<>$PORT` held:  reply = []
+#   without it:                 reply = [Karussell,Apr  8 2025,...]
+#
+# The O_RDWR open (no O_NOCTTY) becomes the controlling terminal for the
+# container's session, after which reads from a non-foreground process group
+# yield EOF rather than data. So each command opens for the write and reads on
+# its own read-only descriptor. The transaction lock above is what keeps this
+# single-session controller safe, not a held descriptor.
+REPLY_FILE="${TMPDIR:-/tmp}/bantam-reply.$$"
+# shellcheck disable=SC2064
+trap "rm -rf '$LOCK' 2>/dev/null || true; rm -f '$REPLY_FILE' 2>/dev/null || true" EXIT INT TERM
+
+# Send a command and return its reply.
+#
+# The reader is attached BEFORE the command goes out, because the controller
+# answers in about 10ms: open the reader afterwards and the reply is already
+# gone. This is why the readback, not the command, was the fragile half.
+say() {
+    : > "$REPLY_FILE"
+    timeout 2 cat < "$PORT" > "$REPLY_FILE" 2>/dev/null &
+    reader=$!
+    sleep 0.2                      # let the reader attach before we transmit
+    printf '%s\r\n' "$1" > "$PORT"
+    sleep 0.6                      # controller answers in ~10ms; be generous
+    kill "$reader" 2>/dev/null || true
+    wait "$reader" 2>/dev/null || true
+    tr -d '\r' < "$REPLY_FILE" | tr '\n' ' ' \
+        | sed 's/  */ /g; s/^ //; s/ *$//' || true
+}
+
+get() { say "$1 ?"; }
+
+# Drive a signal and confirm it took. This is the whole verification story for a
+# silent command processor: the only honest evidence that a power action
+# happened is the line reading back as the value we asked for.
+set_verify() {
+    name="$1"; want="$2"
+    say "$name $want" >/dev/null
+    got=$(get "$name")
+    if [ "$got" = "$want" ]; then
+        echo "  $name := $want (readback $got) ok"
+    else
+        echo "  $name := $want but reads back '${got:-<none>}'" >&2
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+pulse_resin() {
+    set_verify KK_RESIN_N 1
+    sleep "$HOLD"
+    set_verify KK_RESIN_N 0
+}
+
+action="${1:-}"
+[ -n "$action" ] || die "usage: bantam-power <on|off|cycle|reset|id|state|power-state|mode|mode-clear> [--settle N]"
+shift || true
+
+# `--settle` carries the board's configured off->on delay from the controller
+# profile's `off_settle_s`: a PMIC that needs twelve seconds to collapse is a
+# property of the hardware, not of this script.
+a1=""; a2=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --settle) OFF_SETTLE="${2:-$OFF_SETTLE}"; shift 2 || break ;;
+        # Already captured by the pre-scan above; consume it so it is not
+        # mistaken for the action's positional argument.
+        --port)   shift 2 || break ;;
+        *) if [ -z "$a1" ]; then a1="$1"; elif [ -z "$a2" ]; then a2="$1"; fi; shift ;;
+    esac
+done
+
+case "$action" in
+    on)     set_verify PWR_OFF 0; pulse_resin ;;
+    off)    set_verify PWR_OFF 1 ;;
+    cycle)
+        set_verify PWR_OFF 1
+        sleep "$OFF_SETTLE"
+        set_verify PWR_OFF 0
+        pulse_resin
+        ;;
+    reset)  pulse_resin ;;
+    id)     echo "  *IDN? -> $(say '*IDN?')" ;;
+    power-state)
+        # Answer the question conminer could never answer: is the board ON?
+        #
+        # MD_PS_HOLD is the SoC asserting its own power rail, so it reflects what
+        # the board is actually doing rather than what we last asked for --
+        # PWR_OFF is the request, PS_HOLD is the truth, and they disagree exactly
+        # when something interesting has gone wrong.
+        ps=$(get MD_PS_HOLD)
+        case "$ps" in
+            1) echo "on" ;;
+            0) echo "off" ;;
+            *) echo "unknown" ;;
+        esac
+        ;;
+    state)
+        for sig in PWR_OFF KK_RESIN_N MD_PS_HOLD SAIL_PS_HOLD PMS_PON_DONE \
+                   POFF_DONE MD_EDL SS_EDL UEFI FASTBOOT_MD EUD; do
+            echo "  $sig = $(get "$sig")"
+        done
+        ;;
+    get)    [ -n "$a1" ] || die "get needs a signal name"; echo "  $a1 = $(get "$a1")" ;;
+    set)    [ -n "$a1" ] && [ -n "$a2" ] || die "set needs <SIGNAL> <0|1>"
+            set_verify "$a1" "$a2" ;;
+    mode)   [ -n "$a1" ] || die "mode needs a sequence name"
+            # `mode clear` releases every strap. A latched strap silently changes
+            # every later boot, and before this the only escape was reaching into
+            # the container for `bantam-power set MD_EDL 0` -- anyone who can set
+            # a strap must be able to release it the same way.
+            if [ "$a1" = "clear" ] || [ "$a1" = "none" ] || [ "$a1" = "normal" ]; then
+                for sig in MD_EDL SS_EDL UEFI FASTBOOT_MD; do
+                    set_verify "$sig" 0
+                done
+                exit_after_clear=1
+            fi
+            [ -z "${exit_after_clear:-}" ] || { echo "bantam-power: straps cleared"; }
+            # Drive the STRAP LINE, not the firmware sequence.
+            #
+            # Measured on the RIDE's Karussell, three boots each: firing the
+            # firmware sequence `BOOT_MD_EDL` leaves MD_EDL reading 0 and the
+            # board boots NORMALLY -- 108086 bytes with the full XBL log -- while
+            # the hook reports success. Asserting MD_EDL and holding it across
+            # the power-on gives the real thing: 2 bytes and no XBL log, and
+            # clearing it restores a normal 112728-byte boot. A boot mode that
+            # silently does nothing is worse than one that fails, because the
+            # caller goes on to flash a board that is not in EDL.
+            #
+            # The strap must stay asserted across the next power-on, so this only
+            # sets it; `off`/`on`/`cycle` do the rest. Unknown names fall back to
+            # the firmware sequence.
+            case "$a1" in
+                BOOT_MD_EDL)    strap=MD_EDL ;;
+                BOOT_SS_EDL)    strap=SS_EDL ;;
+                BOOT_UEFI)      strap=UEFI ;;
+                MD_FASTBOOT)    strap=FASTBOOT_MD ;;
+                *)              strap="" ;;
+            esac
+            if [ -n "${exit_after_clear:-}" ]; then
+                :
+            elif [ -n "$strap" ]; then
+                set_verify "$strap" 1
+            else
+                echo "  $a1 -> $(say "$a1")"
+            fi ;;
+    mode-clear)
+            # Boot straps latch until cleared, so leaving one set silently
+            # changes how every later boot behaves.
+            for s in MD_EDL SS_EDL UEFI FASTBOOT_MD; do
+                set_verify "$s" 0
+            done ;;
+    *)      die "unknown action '$action'" ;;
+esac
+
+if [ "$FAILED" -gt 0 ]; then
+    echo "bantam-power: $action -- $FAILED signal(s) did not read back as set" >&2
+    exit 3
+fi
+echo "bantam-power: $action ok"

@@ -1,0 +1,50 @@
+# selftest.toml — what each board on this rig is expected to do (§K1).
+#
+# The selftest engine is generic; THIS file is what makes its verdicts mean
+# something on a particular bench. A missing entry is not an error: the checks
+# that do not depend on expectations still run, and the ones that do are skipped
+# rather than guessed at.
+#
+# Mounted beside conminer.toml and found automatically; override the path with
+# CONMINER_SELFTEST_CONFIG.
+
+# ---------------------------------------------------------------- 3.1 --------
+# NordAU RIDE SX. Same open boot stack as the IQ10: TF-A, OP-TEE, EDK2, Linux.
+[target."3.1"]
+stages = ["bl2", "bl31", "uefi", "kernel", "userspace"]
+provenance_components = ["bl2", "bl31", "optee", "kernel", "machine"]
+boot_output_s = 10
+# ~10 s to shell measured; the budget is deliberately several times that, so a
+# slow boot is reported as slow rather than as a failure.
+reboot_s = 45
+terminal_stage = "userspace"
+
+# ---------------------------------------------------------------- 3.2 --------
+# IQ10 EVK, root autologin Debian trixie. ~17 s to shell.
+[target."3.2"]
+stages = ["bl2", "bl31", "uefi", "kernel", "userspace"]
+provenance_components = ["bl2", "bl31", "optee", "kernel", "machine"]
+boot_output_s = 10
+reboot_s = 45
+terminal_stage = "userspace"
+# The XBL timing grammar is where phantom templates came from (§G1): one
+# template per microsecond value, minted every boot. A repeat boot must mint
+# none of them.
+phantom_regexes = [" [BD] \\d+$"]
+
+# ---------------------------------------------------------------- 3.3 --------
+# ADP (Ventuno Q). Qualcomm reference distro on a production UEFI: no TF-A
+# stages to find, and the console stops at a login gate rather than a shell.
+# `power_sense` skips here — the bughopper drives the button with no sense line
+# back from the board, and pretending otherwise is what round 3 fixed.
+[target."3.3"]
+stages = ["kernel", "userspace"]
+provenance_components = ["uefi", "chip", "kernel", "machine"]
+boot_output_s = 12
+# ~24 s to the login gate measured.
+reboot_s = 60
+# The ADP is the slow one into download mode: ~36 s including its own
+# enumeration verify, against the IQ10's ~12 s. A constant here fails this board
+# for being slow rather than for being broken.
+edl_enter_s = 45
+terminal_stage = "userspace"

@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# cm — the only entry point for building and testing conminer.
+#
+# Everything runs in containers; no toolchain is ever installed on the host.
+#
+#   ./cm build            build the dev image
+#   ./cm image            build the production runtime image (conminer:<version>)
+#   ./cm build-id         the source fingerprint this tree would deploy as
+#   ./cm sync <host>      copy this source to a node, keeping what the NODE owns
+#   ./cm test [args...]   cargo test --workspace [args]
+#   ./cm suite <name>     run one §13 test suite (tests/<name>)
+#   ./cm check            cargo fmt --check + clippy -D warnings
+#   ./cm snapshot         refresh the rolling state-shape capture from the fleet
+#   ./cm gate             the full phase gate: check + test + e2e
+#   ./cm run <args...>    run the conminer binary in the dev container
+#   ./cm sh               interactive shell in the dev container
+#   ./cm up / down        bring the production compose stack up / down
+#   ./cm logs [svc]       tail production stack logs
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+DC="docker compose -f docker-compose.yaml -f docker-compose.dev.yaml"
+DEV="$DC run --rm --no-deps dev"
+
+cmd=${1:-help}
+shift || true
+
+
+# ---------------------------------------------------------------- bench lock --
+# A rebuild restarts every service. Doing that while a hardware run is in flight
+# corrupts it: an EDL stress cycle was recorded as a double hook failure when
+# mcpd went down underneath it, which reads as a broken board rather than a
+# broken test. So deploying refuses while a run holds the lock.
+#
+# The lock records its owner's pid, and a dead owner's lock is breakable -- the
+# same rule as the power hooks, for the same reason: one crash must not wedge
+# the bench permanently.
+build_id() {
+  # Everything that ends up in the binary or the config it ships with.
+  find crates profiles.d Cargo.toml Cargo.lock Dockerfile conminer.toml selftest.toml \
+       -type f 2>/dev/null \
+    | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-12
+}
+
+# WHAT BELONGS TO THE NODE, and must never be overwritten by the source tree.
+#
+# `.env` carries CONMINER_PEERS_NAME and the advertise host: it is the node's
+# IDENTITY, not the project's. Copying one node's `.env` onto the others renamed
+# three hosts to a single name in one deploy, and every peer table then listed
+# what looked like duplicate registrations while the router had two candidates
+# for every actuation. `instance.json` is the same fact, persisted. The target
+# dirs and exports are the node's, and re-fetching them costs a rebuild.
+node_owned() { printf '%s\n' .env instance.json target-side target-docker exports .git; }
+
+# What must be REMOVED before unpacking. These are the files build-id hashes; a
+# stale one left behind changes the fingerprint while the source that produced it
+# is gone, and the node then reports a build nobody can reproduce.
+fingerprint_inputs() {
+  printf '%s\n' crates profiles.d Cargo.toml Cargo.lock Dockerfile conminer.toml selftest.toml
+}
+
+sync_source() {
+  local dest=$1; shift
+  local ex=() e
+  while read -r e; do ex+=(--exclude="$e"); done < <(node_owned)
+  local stale; stale=$(fingerprint_inputs | tr '\n' ' ')
+  if [ "$dest" = "--local" ]; then
+    local dir=$1
+    [ -n "$dir" ] || { echo "usage: ./cm sync --local <dir>" >&2; return 2; }
+    mkdir -p "$dir"
+    ( cd "$dir" && rm -rf $stale )
+    tar -czf - "${ex[@]}" . | tar -xzf - -C "$dir"
+  else
+    tar -czf - "${ex[@]}" . \
+      | ssh "$dest" "mkdir -p conminer && cd conminer && rm -rf $stale && tar -xzf -"
+  fi
+}
+
+# ------------------------------------------------------------- state shapes --
+# REFRESH WHAT THE BOARDS ARE ACTUALLY DOING, EVERY FULL RUN.
+#
+# The suites used to be fed only hand-written fixtures, and hand-written
+# fixtures encode the author's model of the hardware rather than the hardware:
+# every prompt fixture opened its epoch BEFORE feeding bytes, while a real power
+# hook stamps the epoch seconds AFTER the board has already booted and gone
+# quiet. The suite was green on an ordering the bench never produces.
+#
+# TWO TIERS, ON PURPOSE.
+#
+#   corpus/shapes/*.tsv         PINNED. Specific gates assert against these.
+#                               Never refreshed automatically -- a fixture that
+#                               silently updates itself when the board changes
+#                               turns a regression into a passing test, which is
+#                               the classic way a golden-file suite stops
+#                               testing anything.
+#
+#   corpus/shapes/rolling/*.tsv REFRESHED here on every full run, and fed to the
+#                               INVARIANTS rather than to exact assertions. New
+#                               hardware behaviour that breaks a rule fails the
+#                               suite, which is a finding, not a chore.
+#
+# Best-effort: a node that is not reachable (CI, offline, bench in use) is
+# skipped with a note. Never fails the run, never touches a board.
+snapshot_shapes() {
+  local out=corpus/shapes/rolling
+  mkdir -p "$out"
+  # `name:user@host` per entry. Override for another bench with
+  # CONMINER_SHAPE_NODES="a:me@host-a b:me@host-b".
+  # Empty by default: the fleet is a property of the site, not of the source.
+  local nodes="${CONMINER_SHAPE_NODES:-}"
+  # SHIP A SCRIPT, DO NOT BUILD A COMMAND STRING. The capture has to survive
+  # the local shell, ssh, the remote shell and `sh -c` inside a container; every
+  # attempt to quote it inline lost a layer somewhere and produced either one
+  # unsplittable column or nothing at all.
+  local script=tools/shape-capture.sh
+  local any=0
+  for spec in $nodes; do
+    local name=${spec%%:*}
+    local dest=${spec#*:}
+    local tmp="$out/.$name.part"
+    # KEY AUTH FIRST, PER NODE. Applying `sshpass` to every host broke the one
+    # that uses a key: it authenticated with a password meant for a different
+    # machine and simply failed. The password path is a FALLBACK, and only when
+    # the operator exported one.
+    # KEY AUTH FIRST, PER NODE, with the password path only as a fallback and
+    # only when the operator exported one.
+    if timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=8 "$dest" true 2>/dev/null; then
+      timeout 30 scp -q -o BatchMode=yes "$script" "$dest:/tmp/conminer-shape.sh" 2>/dev/null \
+        && timeout 60 ssh -o BatchMode=yes "$dest" 'sh /tmp/conminer-shape.sh' > "$tmp" 2>/dev/null || true
+    elif [ -n "${SSHPASS:-}" ] && command -v sshpass >/dev/null 2>&1; then
+      local SP="sshpass -e"
+      timeout 30 $SP scp -q -o StrictHostKeyChecking=no "$script" "$dest:/tmp/conminer-shape.sh" 2>/dev/null \
+        && timeout 60 $SP ssh -o StrictHostKeyChecking=no "$dest" 'sh /tmp/conminer-shape.sh' > "$tmp" 2>/dev/null || true
+    fi
+    # JUDGE IT BY WHAT ARRIVED, not by the remote exit code: the container
+    # command exits non-zero on incidental noise while still producing a good
+    # capture, and a silently empty fixture is worse than none.
+    if [ -s "$tmp" ]; then
+      mv "$tmp" "$out/$name.tsv"
+      echo "  shapes: refreshed $name ($(wc -l < "$out/$name.tsv") rows)"
+      any=1
+    else
+      rm -f "$tmp"
+      echo "  shapes: $name unreachable, keeping the last capture"
+    fi
+  done
+  [ "$any" = 1 ] || echo "  shapes: no node reachable; pinned shapes still apply"
+}
+
+BENCH_LOCK="${CONMINER_BENCH_LOCK:-/tmp/conminer-bench.lock}"
+
+bench_lock_holder() {
+  [ -d "$BENCH_LOCK" ] || return 1
+  local owner; owner=$(cat "$BENCH_LOCK/pid" 2>/dev/null || echo "")
+  [ -n "$owner" ] || { rm -rf "$BENCH_LOCK"; return 1; }
+  if kill -0 "$owner" 2>/dev/null; then echo "$owner"; return 0; fi
+  rm -rf "$BENCH_LOCK"   # dead owner
+  return 1
+}
+
+require_bench_free() {
+  local who
+  if who=$(bench_lock_holder); then
+    echo "refusing: a hardware run is in flight (pid $who holds $BENCH_LOCK)." >&2
+    echo "  wait for it, or clear it with: rm -rf $BENCH_LOCK" >&2
+    exit 3
+  fi
+}
+
+bench_hold() {
+  mkdir -p "$(dirname "$BENCH_LOCK")" 2>/dev/null || true
+  if ! mkdir "$BENCH_LOCK" 2>/dev/null; then
+    if bench_lock_holder >/dev/null; then
+      echo "a hardware run is already in flight" >&2; exit 3
+    fi
+    mkdir "$BENCH_LOCK" 2>/dev/null || { echo "cannot take $BENCH_LOCK" >&2; exit 3; }
+  fi
+  echo $$ > "$BENCH_LOCK/pid"
+  # Released on every exit path, including a signal: a lock that outlives its
+  # run is the failure this is meant to prevent, inverted.
+  trap 'rm -rf "$BENCH_LOCK"' EXIT INT TERM
+}
+
+case "$cmd" in
+  build)   require_bench_free; $DC build dev ;;
+  # The fingerprint of the SOURCE this tree would deploy as. Baked into the
+  # binary at image build time so every node can say which code it is running --
+  # the Cargo version cannot, as three nodes reporting 0.2.0 while running three
+  # different builds demonstrated. Same string on every architecture, because it
+  # hashes the source rather than the binary.
+  build-id) build_id ;;
+  sync)
+    dest=$1; shift || true
+    [ -n "$dest" ] || { echo "usage: ./cm sync <user@host> | --local <dir>" >&2; exit 2; }
+    sync_source "$dest" "$@"
+    ;;
+  image)   docker compose -f docker-compose.yaml build \
+             --build-arg "CONMINER_BUILD=$(build_id)" "$@" ;;
+  test)    snapshot_shapes; $DEV cargo test --workspace "$@" ;;
+  suite)   suite=$1; shift || true; $DEV cargo test --test "$suite" "$@" ;;
+  fuzz)    $DEV cargo test --release --test fuzz -- --nocapture --test-threads=1 "$@" ;;
+  bench)   $DEV cargo test --release --test bench -- --ignored --nocapture --test-threads=1 "$@" ;;
+  check)
+    $DEV cargo fmt --all -- --check
+    $DEV cargo clippy --workspace --all-targets -- -D warnings
+    ;;
+  fmt)     $DEV cargo fmt --all ;;
+  # Refresh the rolling state-shape capture without running the suite.
+  snapshot) snapshot_shapes ;;
+  gate)
+    "$0" check
+    "$0" test
+    "$0" e2e
+    ;;
+  e2e)     $DEV cargo test --test e2e -- --include-ignored --test-threads=1 "$@" ;;
+  run)     $DEV cargo run --quiet --bin conminer -- "$@" ;;
+  sh)      $DC run --rm --no-deps dev /bin/bash ;;
+  up)      require_bench_free
+           CONMINER_BUILD="$(build_id)" \
+             docker compose -f docker-compose.yaml up -d --build "$@" ;;
+  down)    docker compose -f docker-compose.yaml down "$@" ;;
+  logs)    docker compose -f docker-compose.yaml logs -f "$@" ;;
+  clean)   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml down -v ;;
+  help|*)  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

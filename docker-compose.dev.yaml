@@ -1,0 +1,54 @@
+# conminer — development / test overlay.
+#
+# Every build and test runs inside a container; nothing is installed on the host.
+#
+#   ./cm test              # cargo test --workspace
+#   ./cm test drain        # one suite
+#   ./cm check             # fmt + clippy -D warnings
+#   ./cm sh                # shell in the dev container
+#
+# Source is bind-mounted; the cargo registry and target dir are named volumes so
+# rebuilds are incremental across container restarts.
+
+services:
+  dev:
+    build:
+      context: .
+      target: dev
+    image: conminer-dev:0.2.0
+    container_name: conminer-dev
+    working_dir: /work
+    # ptys for testkit::replay (§12.3) and unshare-free socat pairs
+    privileged: false
+    cap_add:
+      - SYS_PTRACE
+    environment:
+      CARGO_HOME: /cargo
+      CARGO_TARGET_DIR: /work/target-docker
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+      RUST_LOG: ${RUST_LOG:-warn}
+      CONMINER_TEST_MODE: "1"
+      CONMINER_PROFILES: /work/profiles.d
+      # insta writes .snap.new next to the goldens on mismatch
+      INSTA_UPDATE: ${INSTA_UPDATE:-no}
+      PROPTEST_CASES: ${PROPTEST_CASES:-64}
+    volumes:
+      - .:/work
+      - conminer-cargo:/cargo
+      - conminer-target:/work/target-docker
+      # docker-in-docker for the §12.6 testcontainers e2e gates
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - conminer
+    command: ["cargo", "test", "--workspace"]
+
+volumes:
+  conminer-cargo:
+    name: conminer-cargo
+  conminer-target:
+    name: conminer-target
+
+networks:
+  conminer:
+    name: conminer

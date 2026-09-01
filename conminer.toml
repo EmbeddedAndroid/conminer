@@ -1,0 +1,302 @@
+# conminer.toml — every knob from §16, at its documented default.
+#
+# Validated by `conminer check-config`; unknown keys and out-of-range values are
+# hard startup failures (§14.5) so the compose healthcheck catches typos.
+# Every value here is overridable by environment (CONMINER_<SECTION>_<KEY>) and
+# anything marked (per-device) can be overridden in a [devices."<selector>"] block.
+
+# ------------------------------------------------------------ discovery -------
+[discovery]
+# Glob lists over /dev/serial/by-id names. The exclude list is the important one:
+# lab hosts carry modems, UPS serials and debug-probe aux ports that conminer
+# must be keepable off. Excluded devices are listed as `ignored`, never opened.
+include = ["*"]
+exclude = []
+hotplug_debounce_ms = 500   # cheap hubs bounce enumeration
+poll_fallback_hz = 1        # used when udev netlink is unavailable (§11)
+removal_grace_ms = 45000    # a console absent this long loses its accepter; a hook press is shorter
+
+[ser2net]
+base_port = 5001            # stable per-device assignment, persisted
+bind = "0.0.0.0"
+config_path = "/var/lib/conminer/ser2net.yaml"
+connect_host = ""            # empty = derive from bind; set to the ser2net host under compose
+max_connections = 8         # minerd holds one; the rest are for humans and tools
+
+[attach]
+reconnect_backoff_ms = 250  # ×2 each failure
+reconnect_backoff_max_ms = 15000
+tcp_keepalive_s = 10        # detect half-dead ser2net sessions
+
+# ----------------------------------------------------------------- line -------
+# (per-device) §3.2 — default applied to every newly discovered device.
+[line]
+baud = 115200
+data_bits = 8
+parity = "none"
+stop_bits = 1
+flow = "none"
+tx_line_ending = "\n"
+auto_baud = false           # perturbs the port; opt-in only (§15.9)
+auto_baud_rates = [115200, 921600, 1500000, 9600, 38400, 57600, 230400, 460800]
+
+# -------------------------------------------------- capture & durability ------
+[capture]
+ring_mb = 64                # (per-device) on-disk raw ring
+# Durability window: batched SQLite commits, so a host power cut loses at most
+# this much captured data. 0 = per-line fsync for paranoid rigs (throughput cost).
+commit_interval_ms = 250
+encoding = "raw"            # bytes verbatim always; UTF-8-lossy is a display view
+max_line_bytes = 1048576    # 1 MB single line cap, continuation-flagged (§13 linesplit)
+# USB signatures that mean "the board is in a flash/recovery mode, not at its
+# normal console" -- the capture loop then publishes `away_in_edl` so EVERY tool
+# agrees the console is not at a prompt, even while a flasher's DevProg/progress
+# serial streams. "vid:pid" or "vid:*" (hex). EDL/QDL is only one shape; add
+# fastboot, DFU, SAM-BA, etc. here without touching code. Empty = built-in
+# defaults (Qualcomm QDL 05c6:9008/900e/9025, Android fastboot 18d1:d00d, STM
+# DFU 0483:df11).
+# recovery_gadgets = ["05c6:9008", "18d1:*"]
+
+[session]
+autosplit_quiet_s = 300     # (per-device) silence gap that closes a live session
+max_hours = 24              # rollover for month-long soak consoles
+
+[retention]
+live_cap_gb = 2             # (per-device)
+file_sessions = "keep-all"
+# §H2. Retention is OFF here because this file documents the COMPILED DEFAULTS,
+# and a lab host that has been capturing for a month must not lose bytes because
+# it upgraded conminer. This rig arms its own policy in docker-compose.yaml via
+# CONMINER_RETENTION_RAW_KEEP_DAYS / _RAW_KEEP_BYTES, which is visible in one
+# place and reversible without a rebuild.
+
+# ---------------------------------------------------- framing and mining ------
+[framer]
+lookback_lines = 64         # retro-attach depth (Zephyr fault lines, Python tracebacks)
+max_record_lines = 2000     # runaway-record cap; closes with `truncated`
+record_timeout_s = 10       # open record with no continuation closes (DEAD_AIR)
+garbage_threshold = 0.30    # non-printable ratio over a 512-byte window
+garbage_window_bytes = 512
+
+[mine]
+similarity = 0.4            # Drain similarity threshold (§6)
+depth = 4                   # fixed prefix-tree depth
+max_children = 100          # per node, overflow into the `<*>` node
+max_line_tokens = 128       # longer lines mined on the first 128 tokens, stored whole
+
+[search]
+fts = true                  # (per-device) §8.1; doubles per-device storage
+window_default_lines = 20
+window_max_lines = 200
+
+# ---------------------------------------------------------- interaction ------
+[runner]
+char_delay_ms = 10          # (per-device) slow bootloader consoles override upward
+echo_timeout_ms = 200       # per-character echo wait
+command_timeout_s = 30      # prompt-return deadline before the recovery ladder
+settle_quiet_ms = 500       # idle confirmation before send
+escape_set = ["C-c", "C-\\", "C-d"]   # ladder rungs 2-3, ordered (per-device)
+allow_raw_send = false      # §8.3 low-level `send` passthrough, default off
+
+[state]
+hung_after_s = 30           # (per-device) silence during an incomplete boot
+loop_min_epochs = 3         # epochs before `boot_looping` is claimed
+
+[lease]
+ttl_s = 900
+max_s = 14400
+
+[hooks]
+power_timeout_s = 30
+flash_timeout_s = 600
+
+[credentials]
+# Per-device login credentials live in a separate 0600 file, never in the
+# registry DB, never in export_session output, never echoed into stored TX bytes.
+file = ""
+
+# ------------------------------------------------------------ service --------
+[mcpd]
+bind = "127.0.0.1"
+port = 8090
+
+[api]
+max_raw_lines = 200
+max_results = 100
+follow_timeout_max_s = 600
+max_concurrent_follows = 64
+
+[follow]
+default_timeout_s = 30
+
+[notify]
+coalesce_ms = 5000          # boot-loop notification storms collapse
+# §K4. Where a watch is allowed to POST its firings. MANDATORY: a watch payload
+# carries console content, so an unrestricted URL on a LAN-open endpoint is an
+# exfiltration primitive that anyone who can reach the API could arm. Empty
+# means nowhere. Patterns are globs against the whole URL.
+# Loopback and the private ranges. The point of the list is keeping console
+# content off the PUBLIC internet -- a watch payload carries kernel logs and
+# command output -- not off the bench's own network, which is the same trust
+# boundary this tool already sits inside. A routable address still has to be
+# added by hand.
+# ONE TRAP, AND IT IS THE OBVIOUS URL: mcpd posts these from INSIDE its
+# container, so `127.0.0.1` is mcpd itself, not your laptop or the lab host. A
+# receiver running on the host wants that host's LAN address (or a compose
+# service name); loopback here reaches nothing and the delivery just fails.
+# Private ranges first; loopback LAST and deliberately not the example.
+allow = [
+  "http://10.*", "http://192.168.*",
+  "http://172.16.*", "http://172.17.*", "http://172.18.*", "http://172.19.*",
+  "http://172.2?.*", "http://172.3?.*",
+  "http://127.0.0.1:*", "http://localhost:*",
+]
+
+# ------------------------------------------------------------------ peers -----
+# §P1. Fleet peering. Two conminer instances on a LAN find each other, share
+# what hardware each owns, and let either drive the other's boards.
+#
+# THE NODE ATTACHED TO A BOARD OWNS IT: it runs the only miner and the only
+# store for that board, and other nodes proxy to it. One source of truth for
+# epochs, templates and leases -- mirrored mining means two stores disagreeing
+# about the same console at 3am.
+[peers]
+enabled = true
+name = ""                   # "" = the persisted identity in <data_dir>/instance.json
+advertise_host = ""         # "" = guess the primary interface; NEVER loopback (§M2)
+# §P3. Carry the conversation both ways with every peer we can reach: tell it
+# what we own (inventory is otherwise a PULL, so a node that can open no
+# connections learns nothing), and park on it asking for calls to run on its
+# behalf. That second half is what lets a node behind one-way connectivity
+# actually DRIVE a board here, not just watch it.
+announce = true
+udp_port = 49111            # broadcast beacon; same on every node
+beacon_interval_s = 5
+ttl_s = 30                  # a peer goes stale this long after its last advert
+inventory_interval_s = 5
+# Static peers, as mcpd URLs. These never expire, and they are how a fleet works
+# where broadcast cannot reach (a NAT-ed host and a lab host, for one).
+nodes = []
+
+[export]
+max_gb = 4
+
+[ingest]
+max_gb = 2
+gzip = "auto"
+
+[log]
+level = "info"
+
+[metrics]
+bind = "127.0.0.1:9090"
+
+[dashboard]                 # the human surface (§17)
+bind = "0.0.0.0:8080"
+allow_tx = true             # false makes the dashboard strictly read-only
+scrollback_lines = 2000
+refresh_ms = 1000           # discoveryd polls hotplug at 1 Hz; faster is waste
+advertise_host = ""         # empty = whatever host the browser used
+
+[time]
+store = "utc"               # host-stamped; rendering is the client's problem
+
+[paths]
+data_dir = "/var/lib/conminer"
+profiles_dir = "/etc/conminer/profiles.d"
+run_dir = "/run/conminer"
+
+# ---------------------------------------------------------------- controllers -
+# Board-controller drivers, matched to hardware by name and bound automatically:
+# plug in a board of a known type and its power controls appear with no
+# per-device configuration. `match` identifies the controller itself, `controls`
+# says which consoles it powers.
+#
+# A controller is kept out of discovery by default, because it is a command
+# processor rather than a console — and several (the Bantam among them) are
+# single-session, so letting ser2net hold one breaks board control outright.
+
+[[controllers]]
+name = "bantam"                       # IQ10 / NordAU "Karussell" controller
+match = "*Bantam*"
+# Any console; WHICH board is decided by USB topology, not by this glob. A bench
+# can hold several Bantam-driven boards (an IQ10 and a NordAU RIDE SX were the
+# first pair), and a name glob cannot tell them apart -- narrowing this to one
+# board name left a newly plugged board with no power control.
+controls = "*"
+# --port {controller} is mandatory: without it the resolved controller is
+# discarded and the hook falls back to its own default port, driving whichever
+# board sits there. Measured: a power-off aimed at the RIDE took down the IQ10.
+power = "bantam-power {action} --settle {off_settle} --port {controller}"
+boot_mode = "bantam-power mode {mode} --port {controller}"
+# Answers "is this board on?" so conminer states it instead of guessing.
+power_state = "bantam-power power-state --port {controller}"
+boot_modes = ["BOOT_MD_EDL", "BOOT_SS_EDL", "BOOT_UEFI", "MD_FASTBOOT", "SS_MD_FASTBOOT"]
+off_settle_s = 6.0                    # let the PMIC rail collapse before restart
+
+[[controllers]]
+name = "bughopper"                    # Arduino Bughopper: FTDI CBUS bit-bang
+match = "*Bughopper*"
+# The Bughopper controls the board whose console it also carries: one FTDI
+# exposes a single UART for the AP/Linux console AND drives power/reset/EDL on
+# its CBUS pins. So it matches itself, and is deliberately NOT excluded from
+# discovery -- excluding it (as the Bantam is) would delete the very port we want.
+controls = "*Bughopper*"
+# Native subcommand, not a script: the process that takes the FTDI interface
+# from ftdi_sio is the one that hands it back, so the console cannot be left
+# missing by a hook that got killed before it could clean up.
+power = "conminer bughopper-power {action} --settle {off_settle} --device {device}"
+boot_mode = "conminer bughopper-power mode {mode} --device {device}"
+# Asked the same way as every controller; answers "unknown" because its CBUS
+# pins are outputs with no sense line back from the board.
+power_state = "conminer bughopper-power power-state --device {device}"
+# This controller claims a USB interface and holds PM_RESIN_N for 6s: ~35s wall,
+# past the 30s global default, which made `power off`/`cycle` unusable via MCP.
+power_timeout_s = 60
+# CBUS carries one boot-mode line (FORCED_USB_BOOT_N), so EDL is the only mode
+# this controller can honestly select.
+boot_modes = ["EDL"]
+# THIS CONTROLLER SEQUENCES ITS OWN ENTRY. It pulses reset and holds the strap
+# across the sampling window, so `boot_mode EDL` puts the board IN EDL -- a
+# reset afterwards boots it straight back out. Measured: mode-then-reset (the
+# sequence a latching controller like the Bantam needs) left no QDL gadget at
+# all, and read as "EDL is broken on this board".
+mode_enters_immediately = true
+off_settle_s = 6.0                    # PMIC long-press
+# MUST be explicit: this key defaults to TRUE, so leaving it out would exclude
+# the Bughopper's own UART from discovery and delete the console we are trying
+# to serve. The Bantam wants true (control-only device, ser2net must not hold
+# it); a controller that carries its own console wants false.
+exclude_from_discovery = false
+
+[[controllers]]
+name = "tac"                          # Qualcomm TAC "Alpaca" FTDI debug board
+# Matched on the USB product string, which is what the vendor's own catalogue
+# keys on and what a by-id name carries: "RIDE MICRO 4.0" -> RIDE_MICRO_4.0.
+# Plug a known TAC board in and its controls appear with no configuration.
+match = "*RIDE_MICRO*"
+# One FT4232H: channels A/B are the board's UARTs, C/D are 8-bit GPIO ports
+# wired to power, straps and USB disconnects. It controls the board whose
+# consoles it carries, so it matches itself -- and must NOT be excluded from
+# discovery, or the consoles go with it.
+controls = "*RIDE_MICRO*"
+power = "conminer tac-power {action} --settle {off_settle} --device {device}"
+boot_mode = "conminer tac-power mode {mode} --device {device}"
+# Answers "unknown" and shows its evidence: `pwr_off` is what was commanded and
+# `md_resout` is the SoC reporting back. Until that line is shown to track a
+# real power cycle on this board, neither is presented as a measurement.
+power_state = "conminer tac-power power-state --device {device}"
+# Four distinct strap sequences from the board's TAC config. SAIL_EDL straps the
+# SAIL domain only; EDL straps the main domain as well.
+boot_modes = ["EDL", "SAIL_EDL", "UEFI", "FASTBOOT"]
+# Each sequence powers down, straps, powers up and releases across the sampling
+# window, so setting a mode IS the entry: do not reset afterwards.
+mode_enters_immediately = true
+power_timeout_s = 60                  # UEFI holds 8s after a 1.5s off
+off_settle_s = 1.5                    # rail collapse, not a PMIC long-press
+exclude_from_discovery = false
+
+# Vendor .tcnf configs for TAC boards this build has no pin map for can be
+# dropped in /etc/conminer/tac.d/*.tcnf; the pins are read from the JSON and the
+# strap sequences are the ones implemented natively (the file's `script` block is
+# deliberately not interpreted).
