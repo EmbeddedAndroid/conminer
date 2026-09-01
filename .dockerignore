@@ -1,0 +1,6 @@
+target/
+target-docker/
+.git/
+**/*.snap.new
+corpus/**/*.big
+*.md:Zone.Identifier

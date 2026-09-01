@@ -1,0 +1,18 @@
+# Build outputs. `target-side` is the cross-built tree and reaches tens of GB.
+target/
+target-docker/
+target-side/
+Cargo.lock.orig
+
+# Per-node state: identity, ports and captured stores. Never shared between
+# nodes; see cm's node_owned().
+.env
+instance.json
+/data/
+exports/
+
+# Insta writes these next to the goldens on mismatch.
+**/*.snap.new
+
+# a NAT-ed host interop debris.
+*:Zone.Identifier
