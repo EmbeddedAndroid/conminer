@@ -1,0 +1,32 @@
+# Nightly tiers (§12.5, §12.1, §15.12): performance, endurance, fuzzing and the
+# agent-level eval scenarios. Tracked statistically rather than gating a PR.
+name: nightly
+
+on:
+  schedule: [{cron: "0 3 * * *"}]
+  workflow_dispatch:
+
+jobs:
+  perf:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {lfs: true}
+      - run: ./cm build
+      - name: Performance floors
+        env:
+          CONMINER_BENCH_GATE: "1"
+        run: ./cm bench
+
+  fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {lfs: true}
+      - run: ./cm build
+      - name: Fuzz the untrusted-input surfaces
+        # The line splitter, the tokenizer and the framer state machines all read
+        # bytes straight off a serial line, which is hostile by definition.
+        env:
+          CONMINER_FUZZ_SECONDS: "600"
+        run: ./cm fuzz

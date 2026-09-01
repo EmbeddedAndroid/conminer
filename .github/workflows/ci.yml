@@ -1,0 +1,83 @@
+# CI (§12.6, §14.9). Everything runs in the same containers developers use, so
+# "works on my machine" and "works in CI" are the same machine.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    # The lab hosts are both architectures, so both are gated (§12.6).
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Build the dev image
+        run: ./cm build
+
+      - name: Formatting and lints
+        run: ./cm check
+
+      - name: Profiles are canonical
+        # TOML binds a bare key to the preceding table, so a top-level array
+        # written after [[triggers]] would silently become a trigger field.
+        run: python3 tools/profilefmt.py --check
+
+      - name: Test suite
+        run: ./cm test
+
+      - name: End-to-end compose gate
+        run: ./cm e2e
+
+      - name: Changelog updated
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --depth=1 origin "${{ github.base_ref }}"
+          if git diff --name-only "origin/${{ github.base_ref }}"...HEAD \
+               | grep -qE '^(crates|profiles\.d)/'; then
+            git diff --name-only "origin/${{ github.base_ref }}"...HEAD \
+              | grep -q '^CHANGELOG.md$' \
+              || { echo "::error::behaviour changed without a CHANGELOG entry"; exit 1; }
+          fi
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: gate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch images
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          # SBOM and provenance attestations ship with the image (§14.9).
+          sbom: true
+          provenance: mode=max
