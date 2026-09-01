@@ -1,0 +1,41 @@
+# `mcuboot` — MCUboot (§A.11.3). The stage precursor to Zephyr.
+
+name = 'mcuboot'
+stage = 'mcuboot'
+stage_rank = 12
+use_generic = true
+
+reset_markers = ['^\[INF\] Starting bootloader']
+mine_strip = ['^\[(INF|WRN|ERR|DBG)\] ']
+
+[[banners]]
+pattern = '^\[INF\] Starting bootloader'
+
+[[banners]]
+pattern = 'MCUboot'
+
+[[severity]]
+pattern = '^\[ERR\]'
+level = 'err'
+
+[[severity]]
+pattern = '^\[WRN\]'
+level = 'warn'
+
+[[severity]]
+pattern = '^\[INF\]'
+level = 'info'
+
+[[severity]]
+pattern = '^\[DBG\]'
+level = 'debug'
+
+[[triggers]]
+pattern = 'Image in the primary slot is not valid!'
+kind = 'line'
+severity = 'crit'
+
+[[triggers]]
+pattern = 'Unable to find bootable image'
+kind = 'line'
+severity = 'crit'

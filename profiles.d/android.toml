@@ -1,0 +1,59 @@
+# `android` — Android over serial (§A.11.2).
+#
+# A tombstone is the record: the `*** *** ***` header opens it, the fatal-signal
+# line and `backtrace:` frames continue it, and it closes on the next unrelated
+# line or on silence.
+
+name = 'android'
+stage = 'android'
+stage_rank = 42
+use_generic = true
+
+context = [
+  '^(pid|Build fingerprint|Revision|ABI|signal|Abort message|uid):',
+  '^\s{4}(x\d{1,2}|lr|sp|pc|pst)\s+[0-9a-f]+',
+  '^\s*#\d+ pc [0-9a-f]+',
+  '^F DEBUG',
+]
+backtrace_headers = [
+  'backtrace:',
+  'F DEBUG   : backtrace:',
+]
+backtrace_frames = ['^\s*#\d+ pc [0-9a-f]+']
+reset_markers = ['init: init first stage started!']
+
+[[banners]]
+pattern = 'init: init (first|second) stage started!'
+
+[[banners]]
+pattern = 'Android Bootloader|androidboot\.'
+
+[[triggers]]
+pattern = '^\*\*\* \*\*\* \*\*\*'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Fatal signal \d+ \(SIG\w+\)'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'ERROR: Could not do normal boot\.'
+severity = 'crit'
+
+[[triggers]]
+pattern = 'dm-verity device corrupted'
+severity = 'emerg'
+
+[[triggers]]
+pattern = '''init: service '.+' exited with status \d+'''
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'Fatal reboot|init: Reboot ending'
+kind = 'line'
+severity = 'crit'
+
+[[prompts]]
+pattern = '(^|\n)[\w:/]*\s*[#$] *$'
+kind = 'shell'

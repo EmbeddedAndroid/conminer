@@ -1,0 +1,11 @@
+Azure RTOS ThreadX version 6.4.0
+tx_application_define: 4 threads created
+sensor thread running
+CFSR = 0x00000082
+MMFAR = 0x00000000
+usage fault detected
+hard fault on thread: sensor
+r0: 0x00000000  r1: 0x20001000  r2: 0x00000004
+lr: 0x08001235  pc: 0x08001a10  xpsr: 0x61000000
+current thread: sensor
+system reset

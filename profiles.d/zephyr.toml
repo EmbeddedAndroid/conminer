@@ -1,0 +1,85 @@
+# `zephyr` — Zephyr RTOS (§A.6).
+#
+# The profile that proves **retro-attachment**: the Cortex-M fault decode
+# (`***** HARD FAULT *****`, `Stacking error`, faulting-instruction address)
+# arrives *before* the `>>> ZEPHYR FATAL ERROR` banner. The trigger therefore
+# sets `lookback = true`, and the framer pulls the contiguous run of preceding
+# `lookback` lines into the record so the crash is one event, not two.
+
+name = 'zephyr'
+stage = 'zephyr'
+stage_rank = 30
+use_generic = true
+
+context = [
+  '^\s*(r\d{1,2}/[a-z0-9]+|xpsr|psr|lr|pc|sp|msp|psp|a\d|ip)\s*:\s*0x[0-9a-fA-F]+',
+  '^\s*Fault escalation',
+  '^\s*(Stacking error|Unstacking error|Data Access Violation|Instruction Access Violation|Illegal use of the EPSR|Bus fault on)',
+  'Faulting instruction address \(r15/pc\): 0x[0-9a-fA-F]+',
+  '^\s*Current thread: 0x[0-9a-fA-F]+',
+  '^\s*Fault during interrupt handling',
+  '^\s*(Faulting instruction address|Halting system)',
+]
+backtrace_headers = [
+  'Call stack:',
+  'Backtrace:',
+]
+terminators = ['Halting system']
+lookback = [
+  '\*\*\*\*\* (HARD|MPU|BUS|USAGE|SECURE) FAULT \*\*\*\*\*',
+  '^\s*(Stacking error|Unstacking error|Data Access Violation|Instruction Access Violation|Illegal use of the EPSR|Bus fault on)',
+  'Faulting instruction address \(r15/pc\): 0x[0-9a-fA-F]+',
+  '^\s*MMFAR Address:|^\s*BFAR Address:',
+  '^\s*Fault during interrupt handling',
+]
+reset_markers = [
+  '\*\*\* Booting Zephyr OS build ',
+  'Halting system',
+]
+mine_strip = [
+  '^\[\d{2}:\d{2}:\d{2}\.\d{3},\d{3}\]\s*',
+  '^\[\d{2}:\d{2}:\d{2}\.\d{3}\]\s*',
+]
+
+[[banners]]
+pattern = '\*\*\* Booting Zephyr OS build '
+
+[[severity]]
+pattern = '<err>|^E:'
+level = 'err'
+
+[[severity]]
+pattern = '<wrn>|^W:'
+level = 'warn'
+
+[[severity]]
+pattern = '<inf>|^I:'
+level = 'info'
+
+[[severity]]
+pattern = '<dbg>|^D:'
+level = 'debug'
+
+[[triggers]]
+pattern = '>>> ZEPHYR FATAL ERROR \d+:'
+severity = 'emerg'
+lookback = true
+
+[[triggers]]
+pattern = 'ASSERTION FAIL \[.*\] @ .*:\d+'
+severity = 'crit'
+lookback = true
+
+[[triggers]]
+pattern = '\*\*\*\*\* (HARD|MPU|BUS|USAGE|SECURE) FAULT \*\*\*\*\*'
+severity = 'emerg'
+lookback = true
+
+[[prompts]]
+pattern = '(^|\n)uart:~\$ *$'
+kind = 'rtos_shell'
+
+[extract]
+zephyr_build = '\*\*\* Booting Zephyr OS build (?P<zephyr_build>\S+)'
+module = '<(?:err|wrn|inf|dbg)> (?P<module>[\w_]+):'
+fatal_code = '>>> ZEPHYR FATAL ERROR (?P<fatal_code>\d+):'

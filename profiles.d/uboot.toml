@@ -1,0 +1,109 @@
+# `uboot` — U-Boot and SPL (§A.2).
+#
+# Environment dumps are a high-volume `key=value` run, which is exactly the
+# tokenizer rule of §6: without it, `bootdelay=2` is one token whose value sits
+# inside Drain's routing depth and every distinct value mints a template.
+
+name = 'uboot'
+stage = 'uboot'
+stage_rank = 20
+use_generic = true
+
+context = [
+  '^pc\s*:\s*\[<?[0-9a-fA-F]+>?\]',
+  '^(sp|ip|fp|lr|r\d{1,2}|x\d{1,2})\s*:\s*',
+  '^Code:',
+  '^(esr|far|elr|spsr)\s+0x[0-9a-fA-F]+',
+  '^Resetting CPU',
+]
+backtrace_headers = [
+  'Backtrace:',
+  'Call trace:',
+]
+terminators = [
+  'Resetting CPU \.\.\.',
+  '^resetting \.\.\.',
+]
+reset_markers = [
+  '^U-Boot SPL \d{4}\.\d{2}',
+  'Resetting CPU \.\.\.',
+  '^resetting \.\.\.',
+]
+
+[[banners]]
+pattern = '^U-Boot SPL \d{4}\.\d{2}'
+stage = 'spl'
+rank = 5
+
+[[banners]]
+pattern = '^U-Boot \d{4}\.\d{2}.*\('
+stage = 'uboot'
+rank = 20
+
+[[banners]]
+pattern = '^Starting kernel \.\.\.'
+stage = 'kernel-handoff'
+rank = 26
+
+[[triggers]]
+pattern = '^(data abort|prefetch abort|undefined instruction)'
+severity = 'emerg'
+
+[[triggers]]
+pattern = '"(Synchronous|SError) Abort" handler, esr 0x[0-9a-fA-F]+'
+severity = 'emerg'
+
+[[triggers]]
+pattern = '### ERROR ### Please RESET the board ###'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'initcall sequence [0-9a-fA-F]+ failed at call'
+severity = 'crit'
+
+[[triggers]]
+pattern = 'Wrong Image Format for \w+ command'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'Bad Linux ARM64 Image magic!'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'ERROR: Did not find a cmdline Flattened Device Tree'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'FDT and ATAGS support not compiled in - hanging'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'alloc space exhausted'
+severity = 'crit'
+
+[[triggers]]
+pattern = 'CACHE: Misaligned operation at range'
+kind = 'line'
+severity = 'warn'
+
+[[prompts]]
+pattern = '(^|\n)(=> |u-boot=> |=>|Zynq> |Marvell>> ) *$'
+kind = 'bootloader'
+
+[[prompts]]
+pattern = 'Enter password'
+kind = 'credential_gate'
+
+[extract]
+uboot_version = '^U-Boot (SPL )?(?P<uboot_version>\d{4}\.\d{2}\S*)'
+
+[tokenizer]
+split_key_value = true
+
+# §F2.
+[[version_banners]]
+pattern = '^U-Boot (?P<version>\d{4}\.\d+\S*)(?:\s*\((?P<build_date>[^)]*)\))?'
+component = 'uboot'

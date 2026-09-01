@@ -1,0 +1,81 @@
+# `optee` — OP-TEE (§A.5).
+#
+# The prefix encodes both severity and origin (`E/TC` core, `E/LD` loader,
+# `E/TA` trusted application). OP-TEE shares the UART with the normal world, so
+# this profile is an **overlay**: its lines interleave inside Linux output rather
+# than replacing the active dialect. That is what `overlay = true` means, and it
+# is why a TZ message inside a kernel boot is attributed to OP-TEE, not the
+# kernel.
+
+name = 'optee'
+stage = 'optee'
+stage_rank = 12
+overlay = true
+use_generic = true
+
+overlay_match = ['^[FEWID]/(TC|LD|TA)\b']
+context = [
+  '\besr 0x[0-9a-fA-F]+',
+  '\bttbr[01] 0x[0-9a-fA-F]+',
+  'TEE load address @ 0x[0-9a-fA-F]+',
+  '^[EFIDW]/(TC|LD|TA):.*\b(sp|pc|lr|x\d+)\s+0x',
+]
+backtrace_headers = ['Call stack:']
+backtrace_frames = ['^[EFIDW]/(TC|LD|TA):\s*0x[0-9a-fA-F]+\s*$']
+continuations = ['^[EFIDW]/(TC|LD|TA):']
+mine_strip = ['^[FEWID]/(TC|LD|TA):\s*\d*\s*\d*\s*']
+
+[[banners]]
+pattern = 'I/TC:\s+OP-TEE version:'
+
+[[banners]]
+pattern = 'I/TC:\s+Primary CPU (initializing|initialized)'
+
+[[severity]]
+pattern = '^[FE]/(TC|LD|TA)'
+level = 'err'
+
+[[severity]]
+pattern = '^W/(TC|LD|TA)'
+level = 'warn'
+
+[[severity]]
+pattern = '^I/(TC|LD|TA)'
+level = 'info'
+
+[[severity]]
+pattern = '^D/(TC|LD|TA)'
+level = 'debug'
+
+[[triggers]]
+pattern = '''Panic '.*' at .*:\d+'''
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Panic at .*:\d+'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Core (data|prefetch)-abort at address 0x[0-9a-fA-F]+'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'TA panicked with code 0x[0-9a-fA-F]+'
+severity = 'crit'
+
+[[triggers]]
+pattern = '''assertion '.*' failed at .*:\d+'''
+severity = 'crit'
+
+[[triggers]]
+pattern = '''E/LD:\s+Can't find '''
+kind = 'line'
+severity = 'err'
+
+[extract]
+origin = '^[FEWID]/(TC|LD|TA)'
+
+# §F2.
+[[version_banners]]
+pattern = 'I/TC:\s*OP-TEE version:\s*(?P<version>\S+)(?:\s*\((?P<builder>[^)]*)\))?(?:.*?(?P<build_date>\w{3}\s+\w{3}\s+\d+\s[\d:]+\s+\w+\s+\d{4}))?'
+component = 'optee'

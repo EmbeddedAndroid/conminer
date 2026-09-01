@@ -1,0 +1,91 @@
+# `freertos` — FreeRTOS and vendor dialects (§A.7).
+#
+# Core FreeRTOS prints **nothing** on failure by default: `configASSERT`,
+# `vApplicationStackOverflowHook` and `vApplicationMallocFailedHook` are
+# user-defined. So this profile is a heuristic base plus vendor dialects, with
+# ESP-IDF first because it dominates in the wild. §5's expectation stands:
+# per-project profiles in `profiles.d/` are the norm here, and this file is the
+# starting point to copy.
+
+name = 'freertos'
+stage = 'freertos'
+stage_rank = 30
+use_generic = true
+
+context = [
+  '^Core\s+\d+ register dump:',
+  '^\s*(PC|PS|A\d{1,2}|SAR|EXCCAUSE|EXCVADDR|LBEG|LEND|LCOUNT)\s*:\s*0x[0-9a-fA-F]+',
+  '^ELF file SHA256:',
+  '^Core\s+\d+ was running in ISR context',
+]
+backtrace_headers = ['Backtrace:']
+backtrace_frames = ['^Backtrace: (0x[0-9a-fA-F]+:0x[0-9a-fA-F]+ ?)+']
+terminators = [
+  'Rebooting\.\.\.',
+  'CPU halted',
+]
+reset_markers = [
+  'rst:0x[0-9a-fA-F]+ \(.*\),boot:0x',
+  'ESP-ROM:esp',
+  'Rebooting\.\.\.',
+]
+mine_strip = ['^[EWID] \(\d+\) ']
+
+[[banners]]
+pattern = 'ESP-ROM:esp|rst:0x[0-9a-fA-F]+ \(.*\),boot:0x'
+
+[[banners]]
+pattern = 'FreeRTOS (Kernel )?V?\d+\.\d+'
+
+[[severity]]
+pattern = '^E \(\d+\)'
+level = 'err'
+
+[[severity]]
+pattern = '^W \(\d+\)'
+level = 'warn'
+
+[[severity]]
+pattern = '^I \(\d+\)'
+level = 'info'
+
+[[severity]]
+pattern = '^D \(\d+\)'
+level = 'debug'
+
+[[triggers]]
+pattern = '''Guru Meditation Error: Core\s+\d+ panic'ed'''
+severity = 'emerg'
+
+[[triggers]]
+pattern = '\*\*\*ERROR\*\*\* A stack overflow in task .+ has been detected'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'assert failed: \S+ \S+:\d+'
+severity = 'crit'
+
+[[triggers]]
+pattern = 'abort\(\) was called at PC 0x[0-9a-fA-F]+'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Brownout detector was triggered'
+kind = 'line'
+severity = 'crit'
+
+[[triggers]]
+pattern = '(?i)[Ss]tack overflow'
+severity = 'emerg'
+
+[[triggers]]
+pattern = '(?i)[Mm]alloc failed'
+severity = 'crit'
+
+[[prompts]]
+pattern = '(^|\n)(esp32?> |\[freertos\]# ) *$'
+kind = 'rtos_shell'
+
+[extract]
+reset_cause = 'rst:0x[0-9a-fA-F]+ \((?P<reset_cause>[^)]+)\)'
+esp_tag = '^[EWID] \(\d+\) (?P<esp_tag>[^:]+):'

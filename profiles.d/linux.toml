@@ -1,0 +1,328 @@
+# `linux` — the Linux kernel console (§A.1).
+#
+# Seeded from LAVA's `LinuxKernelMessages` pexpect set and SQUAD's
+# `linux_log_parser.py` regex family (both GPL-2.0+; the *patterns* are ported
+# with attribution, no code is vendored — §5, §A.9). The superset guarantee of
+# §A.9 applies: anything LAVA or SQUAD classifies as a failure, this profile must
+# classify at least as severely.
+#
+# The printk timestamp is extracted (non-destructively) and stripped from the
+# **mining key only**. Without that, every line's `[    1.234567]` prefix would
+# route it into its own prefix-tree branch and the template store would be one
+# template per line. The raw bytes keep the timestamp; `fields.ts_printk` holds
+# it; and §14.4 still says target time is never trusted for ordering.
+
+name = 'linux'
+stage = 'kernel'
+stage_rank = 30
+record_timeout_s = 10
+use_generic = true
+
+context = [
+  '^\s*CPU: \d+ (UID: \d+ )?PID: \d+ Comm:',
+  '^\s*Hardware name:',
+  '^\s*Modules linked in:',
+  '^\s*(pstate|sp|pc|lr|x\d{1,2}|r\d{1,2}) *:',
+  '^\s*(RIP|RSP|RAX|RBX|RCX|RDX|RSI|RDI|RBP|R0[89]|R1[0-5]|CS|FS|GS|CR[0-4]|EFLAGS)\s*:',
+  '^\s*(PC|LR) is at ',
+  '^\s*(esr|ESR|far|FAR|Code|Flags|Control|Table|Exception class)\s*:',
+  '^\s*Mem-Info:',
+  '^\s*Call trace:',
+  '^\s*(Data|Instruction) abort info:',
+  '^\s*\[<[0-9a-f]+>\]',
+  '^\s*(Tainted:|CPU features:|Memory Limit:)',
+  '^\S+ #\d+ (Not tainted|Tainted:)',
+  '^\s*\d+\.\d+\S* #\d+',
+  '^\s*(active_anon|free:|lowmem_reserve|Node \d+ )',
+  '^\s*(other info that might help|possible unsafe locking scenario|stack backtrace)',
+]
+backtrace_headers = [
+  'Call Trace:',
+  'Call trace:',
+  'Backtrace:',
+  'Stack:',
+]
+backtrace_frames = [
+  '^\s*\[<[0-9a-f]+>\]',
+  '\b\w+\+0x[0-9a-f]+/0x[0-9a-f]+',
+  '^\s*\? ',
+  '^\s*</?(TASK|IRQ|NMI)>',
+]
+terminators = [
+  '-+\[ end trace [0-9a-fx]+ \]-+',
+  '-+\[ end Kernel panic',
+  'Rebooting in \d+ seconds',
+  'Fatal exception: panic_on_oops',
+  'Kernel Offset:',
+]
+continuations = ['^\s*$']
+lookback = ['-+\[ cut here \]-+']
+reset_markers = [
+  'Linux version \d+\.\d+[^ ]* \(',
+  'Rebooting in \d+ seconds',
+  'Restarting system',
+]
+mine_strip = [
+  '^<\d>',
+  '^\[\s*\d+\.\d+\]\s*',
+]
+# A printk timestamp appearing MID-LINE means a kernel message interleaved into
+# whatever was being printed with no newline -- systemd status lines and login
+# prompts do this constantly. Measured on a real boot, one "read descriptors"
+# message wore eight different prefixes and so never clustered with itself.
+# Mining restarts at the timestamp; the raw line keeps every byte the board sent.
+mine_resync = '\[\s*\d+\.\d+\]'
+
+
+[[banners]]
+pattern = 'Linux version \d+\.\d+[^ ]* \('
+stage = 'kernel'
+rank = 30
+
+[[banners]]
+pattern = 'Booting Linux on physical CPU'
+stage = 'kernel'
+rank = 30
+
+[[banners]]
+pattern = 'Run /(sbin/)?init as init process|Run /init as init process'
+stage = 'userspace'
+rank = 40
+
+[[banners]]
+pattern = 'systemd\[1\]: Detected architecture|Welcome to \x1b?\[?[0-9;]*m?(Debian|Ubuntu|Alpine|Buildroot)'
+stage = 'userspace'
+rank = 40
+
+[[severity]]
+pattern = '^<0>'
+level = 'emerg'
+
+[[severity]]
+pattern = '^<1>'
+level = 'alert'
+
+[[severity]]
+pattern = '^<2>'
+level = 'crit'
+
+[[severity]]
+pattern = '^<3>'
+level = 'err'
+
+[[severity]]
+pattern = '^<4>'
+level = 'warn'
+
+[[severity]]
+pattern = '^<5>'
+level = 'notice'
+
+[[severity]]
+pattern = '^<6>'
+level = 'info'
+
+[[severity]]
+pattern = '^<7>'
+level = 'debug'
+
+[[triggers]]
+pattern = 'Kernel panic - not syncing:'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Internal error: Oops'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Oops:? *(-|\d|#)'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'kernel BUG at [^ ]+:\d+!'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'BUG: unable to handle kernel (NULL pointer dereference|paging request)'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'BUG: unable to handle page fault for address'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'general protection fault'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'invalid opcode:'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Unhandled (fault|prefetch abort)'
+severity = 'crit'
+
+[[triggers]]
+pattern = 'Bad mode in \S+ handler detected'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'SError Interrupt on CPU'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Unable to handle kernel paging request'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'stack-protector: Kernel stack is corrupted'
+severity = 'emerg'
+
+[[triggers]]
+pattern = '-+\[ cut here \]-+'
+kind = 'line'
+severity = 'warn'
+
+[[triggers]]
+pattern = 'WARNING: CPU: \d+ PID: \d+ at '
+kind = 'line'
+severity = 'warn'
+lookback = true
+
+[[triggers]]
+pattern = 'WARNING: possible circular locking dependency detected'
+kind = 'line'
+severity = 'warn'
+
+[[triggers]]
+pattern = 'WARNING: possible recursive locking detected'
+kind = 'line'
+severity = 'warn'
+
+[[triggers]]
+pattern = 'inconsistent lock state'
+kind = 'line'
+severity = 'warn'
+
+[[triggers]]
+pattern = 'BUG: sleeping function called from invalid context'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'BUG: scheduling while atomic'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'watchdog: BUG: soft lockup - CPU#\d+ stuck'
+kind = 'line'
+severity = 'crit'
+
+[[triggers]]
+pattern = 'NMI watchdog: Watchdog detected hard LOCKUP'
+kind = 'line'
+severity = 'crit'
+
+[[triggers]]
+pattern = 'INFO: task .+ blocked for more than \d+ seconds'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'rcu: INFO: rcu_(sched|preempt|bh) (self-)?detected stall'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'Out of memory: Killed process \d+'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = '^\s*oom-kill:'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'page allocation failure: order:'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = '(UBSAN:|KASAN:|BUG: KFENCE:|kmemleak:)'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'refcount_t: (underflow|overflow|saturated)'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = 'potentially unexpected fatal signal'
+kind = 'line'
+severity = 'err'
+
+[[triggers]]
+pattern = '''^thread '.*' panicked at .*:\d+'''
+severity = 'err'
+
+[[triggers]]
+pattern = '^(panic|fatal error): '
+severity = 'err'
+
+[[triggers]]
+pattern = '^Traceback \(most recent call last\):'
+severity = 'err'
+
+[[triggers]]
+pattern = 'terminate called after throwing an instance of'
+severity = 'err'
+
+[[triggers]]
+pattern = '\*\*\* stack smashing detected \*\*\*'
+severity = 'crit'
+
+[[triggers]]
+pattern = '(double free or corruption|malloc\(\): invalid size|corrupted size vs\. prev_size)'
+severity = 'crit'
+
+[[prompts]]
+# The trailing group tolerates a kernel message landing on the prompt line
+# itself. On a board that logs continuously the prompt is frequently overwritten
+# mid-line -- measured on the IQ10 as
+#   root@debian-trixie-arm64:~# [   47.646380] [drm] NORDAUX tout: ...
+# and an end-anchored pattern can never match that, so the shell looked absent.
+pattern = '^[^ ]*[#$] (\[\s*\d+\.\d+\].*)?$'
+kind = 'shell'
+
+[[prompts]]
+pattern = '(^|\n)[\w.-]+ login: *$'
+kind = 'credential_gate'
+
+[[prompts]]
+pattern = '(^|\n)(Password|Username): *$'
+kind = 'credential_gate'
+
+[extract]
+ts_printk = '^\[\s*(?P<ts_printk>\d+\.\d+)\]'
+loglevel = '^<(?P<loglevel>\d)>'
+cpu = 'CPU: (?P<cpu>\d+)'
+pid = 'PID: (?P<pid>\d+)'
+comm = 'Comm: (?P<comm>\S+)'
+kernel_version = '^Linux version (?P<kernel_version>\S+)'
+
+[tokenizer]
+split_key_value = false
+
+# §F2. The kernel version AND its build number: on this rig two images can share
+# a version string and differ only in `#187`, which is exactly the confusion the
+# fingerprint rule exists to prevent.
+[[version_banners]]
+pattern = 'Linux version (?P<version>\S+) \((?P<builder>[^)]*)\).*?(?P<build>#\d+.*?)$'
+component = 'kernel'
+
+[[version_banners]]
+pattern = 'Machine model:\s*(?P<version>.+?)\s*$'
+component = 'machine'

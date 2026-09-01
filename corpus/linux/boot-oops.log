@@ -1,0 +1,41 @@
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x414fd0c1]
+[    0.000000] Linux version 6.12.9 (build@lab) (aarch64-linux-gnu-gcc 14.2.0) #1 SMP PREEMPT
+[    0.000000] Machine model: Qualcomm Technologies, Inc. IQ-10 EVK
+[    0.000000] Kernel command line: console=ttyMSM0,115200n8 root=/dev/sda2 rw
+[    0.000000] printk: bootconsole [qcom_geni0] enabled
+[    0.235123] smp: Bringing up secondary CPUs ...
+[    0.240001] Detected PIPT I-cache on CPU1
+[    0.240310] CPU1: Booted secondary processor 0x0000000100 [0x414fd0c1]
+[    0.245002] Detected PIPT I-cache on CPU2
+[    0.245310] CPU2: Booted secondary processor 0x0000000200 [0x414fd0c1]
+[    0.250002] Detected PIPT I-cache on CPU3
+[    0.250310] CPU3: Booted secondary processor 0x0000000300 [0x414fd0c1]
+[    0.251000] smp: Brought up 1 node, 4 CPUs
+[    1.102345] mmc0: new HS200 MMC card at address 0001
+[    1.110002] mmcblk0: mmc0:0001 SEM32G 29.1 GiB
+[    1.523400] EXT4-fs (mmcblk0p2): mounted filesystem with ordered data mode. Quota mode: none.
+[    1.531200] Freeing unused kernel memory: 4096K
+[    1.540000] Run /sbin/init as init process
+[    3.221004] Unable to handle kernel NULL pointer dereference at virtual address 0000000000000018
+[    3.221010] Mem abort info:
+[    3.221012]   ESR = 0x0000000096000006
+[    3.221015]   EC = 0x25: DABT (current EL), IL = 32 bits
+[    3.221018] Internal error: Oops: 0000000096000006 [#1] PREEMPT SMP
+[    3.221030] Modules linked in: qcom_q6v5_pas qcom_pil_info
+[    3.221040] CPU: 2 PID: 173 Comm: kworker/2:1 Not tainted 6.12.9 #1
+[    3.221045] Hardware name: Qualcomm Technologies, Inc. IQ-10 EVK (DT)
+[    3.221050] pstate: 60400009 (nZCv daif +PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+[    3.221055] pc : qcom_q6v5_probe+0x64/0x2a0 [qcom_q6v5_pas]
+[    3.221060] lr : platform_probe+0x68/0xd8
+[    3.221065] sp : ffff80008191bab0
+[    3.221070] x29: ffff80008191bab0 x28: 0000000000000000 x27: ffff0000c1a40000
+[    3.221075] x26: ffff800081234000 x25: 0000000000000000 x24: ffff0000c1a40080
+[    3.221080] Call trace:
+[    3.221085]  qcom_q6v5_probe+0x64/0x2a0 [qcom_q6v5_pas]
+[    3.221090]  platform_probe+0x68/0xd8
+[    3.221095]  really_probe+0xc8/0x3a0
+[    3.221100]  driver_probe_device+0x40/0x110
+[    3.221110] Code: aa1303e0 f9400a61 f9401021 f9400c20 (f9400c01)
+[    3.221120] ---[ end trace 0000000000000000 ]---
+[    3.231000] systemd[1]: Detected architecture arm64.
+[    3.400000] systemd[1]: Started Journal Service.

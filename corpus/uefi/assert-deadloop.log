@@ -1,0 +1,14 @@
+UEFI firmware (version EDK II built at 12:04:33 on Jan  4 2026)
+[Bds]Booting UEFI Shell
+BdsDxe: loading Boot0001 "UEFI Shell" from Fv(A881D567)
+Progress |          |
+Progress |=====     |
+Progress |==========|
+ASSERT_EFI_ERROR (Status = Not Found)
+ASSERT MdeModulePkg/Core/Dxe/Image/Image.c(1102): !EFI_ERROR (Status)
+ExceptionData - 0000000000000000
+X0 : 0x0000000000000000  X1 : 0x00000000FFFFFFFF
+X2 : 0x0000000000000010  X3 : 0x0000000000000000
+ESR : 0x0000000096000010
+FAR : 0x0000000000000000
+0000000000000000: 00 00 00 00 00 00 00 00

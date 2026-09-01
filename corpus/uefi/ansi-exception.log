@@ -1,0 +1,5 @@
+UEFI firmware (version EDK II built at 12:04:33 on Jan  4 2026)
+[2J[1;1H[0mBdsDxe: loading Boot0001
+[1;31m!!!! X64 Exception Type - 0E(#PF - Page-Fault)  CPU Apic ID - 00000000 !!!![0m
+RIP  - 00000000FFEE0000, CS  - 0000000000000038
+RSP  - 000000007FEE0000, RBP - 0000000000000000

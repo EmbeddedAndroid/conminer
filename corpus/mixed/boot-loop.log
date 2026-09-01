@@ -1,0 +1,24 @@
+NOTICE:  BL1: v2.11(release):v2.11
+NOTICE:  BL2: v2.11(release):v2.11
+NOTICE:  BL31: v2.11(release):v2.11
+U-Boot 2026.01 (Jan 04 2026 - 12:00:11 +0000)
+Starting kernel ...
+[    0.000000] Linux version 6.12.9 (build@lab) (gcc 14.2.0) #1 SMP
+[    1.470000] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+[    1.470100] ---[ end Kernel panic - not syncing: VFS: Unable to mount root fs ]---
+NOTICE:  BL1: v2.11(release):v2.11
+NOTICE:  BL2: v2.11(release):v2.11
+NOTICE:  BL31: v2.11(release):v2.11
+U-Boot 2026.01 (Jan 04 2026 - 12:00:11 +0000)
+Starting kernel ...
+[    0.000000] Linux version 6.12.9 (build@lab) (gcc 14.2.0) #1 SMP
+[    1.471000] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+[    1.471100] ---[ end Kernel panic - not syncing: VFS: Unable to mount root fs ]---
+NOTICE:  BL1: v2.11(release):v2.11
+NOTICE:  BL2: v2.11(release):v2.11
+NOTICE:  BL31: v2.11(release):v2.11
+U-Boot 2026.01 (Jan 04 2026 - 12:00:11 +0000)
+Starting kernel ...
+[    0.000000] Linux version 6.12.9 (build@lab) (gcc 14.2.0) #1 SMP
+[    1.472000] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+[    1.472100] ---[ end Kernel panic - not syncing: VFS: Unable to mount root fs ]---

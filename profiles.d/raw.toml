@@ -1,0 +1,32 @@
+# `raw` — the fallback profile (§5).
+#
+# Every line is a record. No multi-line grouping is attempted, because by
+# definition we do not know this firmware's grammar; what we *can* do honestly is
+# classify severity with the cross-cutting §A.10 classes, which is what
+# `use_generic` turns on. Anything more would be guessing about record
+# boundaries, and a wrong boundary is worse than none.
+
+name = 'raw'
+stage = 'unknown'
+stage_rank = 100
+use_generic = true
+
+# §F3. The XBL timing grammar, repeated here because the fallback profile is
+# what claims these lines when a log is ingested without stage detection -- and a
+# grammar is identified by its own shape, not by which profile happened to frame
+# the line. (Same lesson as the version banners.)
+[[structured_lines]]
+# XBL right-aligns the microseconds, so the separators carry runs of spaces:
+# `B -      1234 - sbl1_ddr_init`.
+pattern = '^(?P<prefix>[BD])\s+-\s+(?P<value>\d+)\s+-\s+(?P<label>\S.*?)\s*$'
+# The LABEL LEADS. Drain routes on token count then leading tokens, so a
+# label in second position still generalises away: `B - sbl1_ddr_init - 1234`
+# and `B - sbl1_hw_init - 5678` differ in two of four tokens and merge back into
+# `B - <*> - <*>`, which is the bug. Leading with the label puts each one on its
+# own branch, and B/D stay distinct because they are different events (begin and
+# done), not two spellings of one.
+rewrite = '{label} {prefix} {value}'
+
+[[structured_lines]]
+pattern = '^S\s+-\s+(?P<label>[^,]+),\s*(?P<value>.+?)\s*$'
+rewrite = '{label} S {value}'

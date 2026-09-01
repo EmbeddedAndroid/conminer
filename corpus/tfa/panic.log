@@ -1,0 +1,15 @@
+NOTICE:  BL1: v2.11(release):v2.11
+NOTICE:  BL1: Built : 09:12:04, Jan  4 2026
+NOTICE:  BL1: Booting BL2
+NOTICE:  BL2: v2.11(release):v2.11
+NOTICE:  BL2: Booting BL31
+NOTICE:  BL31: v2.11(release):v2.11
+ERROR:   Unhandled Exception in EL3.
+ERROR:   x30            = 0x0000000004001234
+ERROR:   x0             = 0x0000000000000000
+ERROR:   x1             = 0x000000000000000c
+ERROR:   scr_el3        = 0x000000000000073d
+ERROR:   sctlr_el3      = 0x0000000030cd183f
+ERROR:   esr_el3        = 0x0000000096000010
+ERROR:   far_el3        = 0x0000000000000000
+ERROR:   elr_el3        = 0x0000000004001234

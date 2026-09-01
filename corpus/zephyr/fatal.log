@@ -1,0 +1,15 @@
+*** Booting Zephyr OS build v4.0.0-1234-gabcdef012345 ***
+[00:00:00.001,000] <inf> board: IQ-10 sensor hub online
+[00:00:00.002,000] <inf> spi_nor: mx25l51245 detected
+[00:00:01.100,000] <wrn> thermal: sensor 2 above 70C
+[00:00:02.000,000] <err> can: bus off, restarting
+***** HARD FAULT *****
+  Fault escalation (see below)
+  Stacking error
+Faulting instruction address (r15/pc): 0x00004a12
+>>> ZEPHYR FATAL ERROR 0: CPU exception on CPU 0
+Current thread: 0x20001a40 (can_rx)
+r0/a1:  0x00000000  r1/a2:  0x20001a40  r2/a3:  0x00000001
+r12/ip:  0x00000000  r14/lr:  0x00004a05
+ xpsr:  0x61000000
+Halting system

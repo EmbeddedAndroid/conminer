@@ -1,0 +1,571 @@
+#boots	id	seq	opened_by	opened_at	opened_offset	bytes	closed_at
+boot	566	566	session	1786907015408	5244519	0	1786907141061
+boot	567	567	power	1786907141061	5244519	0	1786907141635
+boot	568	568	session	1786907141635	5244519	2743	1786907183551
+boot	569	569	mark	1786907183551	5247280	0	1786907200884
+boot	570	570	power	1786907200884	5247280	20624	1786908096831
+#lines	id	boot_id	ts_wall	stream_offset	terminator	text
+line	112093	568	1786907151463	5244519	crlf	
+line	112094	568	1786907151463	5244521	crlf	Format: Log Type - Time(microsec) - Message - Optional Info
+line	112095	568	1786907151504	5244584	crlf	Log Type: B - Since Boot(Power On Reset),  D - Delta,  S - Statistic
+line	112096	568	1786907151504	5244654	crlf	S - QC_IMAGE_VERSION_STRING=BOOT.XF.4.1.4-00004-KAMORTALAZ-3
+line	112097	568	1786907151504	5244716	crlf	S - IMAGE_VARIANT_STRING=AgattiPkgLAA
+line	112098	568	1786907151504	5244755	crlf	S - OEM_IMAGE_VERSION_STRING=crm-ubuntu02
+line	112099	568	1786907151504	5244798	crlf	S - Boot Interface: USB
+line	112100	568	1786907151504	5244823	crlf	S - Secure Boot: Off
+line	112101	568	1786907151504	5244845	crlf	S - Boot Config @ 0x01b46070 = 0x00000041
+line	112102	568	1786907151504	5244888	crlf	S - JTAG ID @ 0x01b46130 = 0x001c80e1
+line	112103	568	1786907151504	5244927	crlf	S - OEM ID @ 0x01b46138 = 0x00000000
+line	112104	568	1786907151504	5244965	crlf	S - Serial Number @ 0x01b46134 = 0xe1f9b69a
+line	112105	568	1786907151545	5245012	crlf	S - OEM Config Row 0 @ 0x01b441b8 = 0x0000000000000000
+line	112106	568	1786907151545	5245068	crlf	S - OEM Config Row 1 @ 0x01b441c0 = 0x0000000000000000
+line	112107	568	1786907151545	5245124	crlf	S - Feature Config Row 0 @ 0x01b441d0 = 0x0050200016418000
+line	112108	568	1786907151545	5245184	crlf	S - Feature Config Row 1 @ 0x01b441d8 = 0x0012008017830000
+line	112109	568	1786907151545	5245244	crlf	S - Core 0 Frequency, 1305 MHz
+line	112110	568	1786907151545	5245276	crlf	S - PBL Patch Ver: 1
+line	112111	568	1786907151545	5245298	crlf	S - PBL freq: 0 MHZ
+line	112112	568	1786907151545	5245319	crlf	D -      5505 - pbl_apps_init_timestamp
+line	112113	568	1786907151545	5245360	crlf	D -   9509741 - bootable_media_detect_timestamp
+line	112114	568	1786907151545	5245409	crlf	D -  10290765 - bl_elf_metadata_loading_timestamp
+line	112115	568	1786907151545	5245460	crlf	D -       698 - bl_hash_seg_auth_timestamp
+line	112116	568	1786907151586	5245506	crlf	D -     47968 - bl_elf_loadable_segment_loading_timestamp
+line	112117	568	1786907151625	5245567	crlf	D -      4247 - bl_elf_segs_hash_verify_timestamp
+line	112118	568	1786907151625	5245618	crlf	D -     17450 - bl_sec_hash_seg_auth_timestamp
+line	112119	568	1786907151625	5245666	crlf	D -       850 - bl_sec_segs_hash_verify_timestamp
+line	112120	568	1786907151625	5245717	crlf	D -        31 - pbl_populate_shared_data_and_exit_timestamp
+line	112121	568	1786907151625	5245778	crlf	S -  19877255 - PBL, End
+line	112122	568	1786907151625	5245804	crlf	B -  19893925 - SBL1, Start (MPM timestamp = 19885359)
+line	112123	568	1786907151625	5245860	crlf	B -  20007049 - SBL1 BUILD @ 23:13:11 on Apr  2 2026
+line	112124	568	1786907151625	5245914	crlf	D -       629 - sbl1_hw_init
+line	112125	568	1786907151625	5245944	crlf	D -         8 - boot_flash_init
+line	112126	568	1786907151667	5245979	crlf	B -  20019237 - Using boot chain :: Primary
+line	112127	568	1786907151667	5246024	crlf	D -      2883 - sbl1_update_partition_ids
+line	112128	568	1786907151667	5246067	crlf	D -      1351 - sbl1_xblconfig_init
+line	112129	568	1786907151667	5246104	crlf	D -         3 - sbl1_feature_config_init
+line	112130	568	1786907151667	5246146	crlf	D -         3 - boot_config_data_table_default_init
+line	112131	568	1786907151667	5246199	crlf	D -        19 - sbl1_ddr_set_default_params
+line	112132	568	1786907151667	5246244	crlf	B -  20041273 - Using default CDT
+line	112133	568	1786907151667	5246279	crlf	D -      3913 - boot_config_data_table_init
+line	112134	568	1786907151667	5246324	crlf	B -  20048243 - CDT Version:3,Platform ID:34,Major ID:1,Minor ID:0,Subtype:0
+line	112135	568	1786907151667	5246402	crlf	D -      9487 - sbl1_hw_platform_pre_ddr
+line	112136	568	1786907151667	5246444	crlf	D -      2702 - pmic DevPrg init
+line	112137	568	1786907151667	5246478	crlf	D -      3654 - sbl1_hw_pre_ddr_init
+line	112138	568	1786907151667	5246516	crlf	D -         4 - boot_dload_handle_forced_dload_timeout
+line	112139	568	1786907151667	5246572	crlf	D -        80 - sbl1_ddr_set_params
+line	112140	568	1786907151667	5246609	crlf	B -  20076861 - DSF version = 20.0, DSF RPM version = 11.0
+line	112141	568	1786907151667	5246669	crlf	B -  20076986 - Manufacturer ID = 255, Device Type = 7
+line	112142	568	1786907151667	5246725	crlf	B -  20082202 - Rank 0 size = 2048 MB, Rank 1 size = 0 MB
+line	112143	568	1786907151667	5246784	crlf	B -  20087078 - Max Frequency = 1804 MHz
+line	112144	568	1786907151667	5246826	crlf	B -  20092215 - Row Hammer Check : DRAM supports unlimited MAC Value : MR24[OP2:0 = 0] & MR24[OP3 = 1] for CH0 & CS0
+line	112145	568	1786907151667	5246944	crlf	D -     27814 - sbl1_ddr_init
+line	112146	568	1786907151710	5246977	crlf	D -        75 - sbl1_do_ddr_training
+line	112147	568	1786907151710	5247015	crlf	B -  20108917 - DevProg DDR Entry
+line	112148	568	1786907151710	5247050	crlf	B -  20112695 - usb: init start
+line	112149	568	1786907151710	5247083	crlf	B -  20115237 - usb: SUPER , 0x900e
+line	112150	568	1786907151710	5247120	crlf	B -  20118099 - usb: timer_start , 0x4c4b40
+line	112151	568	1786907151710	5247165	crlf	B -  20121300 - usb: ENUM success
+line	112152	568	1786907152503	5247202	crlf	B -  20962202 - usb: host sends ZLP
+line	112153	568	1786907162966	5247241	crlf	B -  31429788 - usb: host sends ZLP
+line	112154	570	1786907184238	5247280	crlf	sh_seg_auth_timestamp
+line	112155	570	1786907184238	5247303	lf	D -     14350 - bl_elf_lÂê…µÁ5R†
+line	112156	570	1786907184238	5247336	lf	R ^R^R$$HL^S^SS^S¤ ’^Vë5•}¡…Í¡}Í•}…ÕÑ¡}Ñ¥µ•ÍÑ…µÁ5RF
+line	112157	570	1786907184238	5247384	crlf	© ^R^R$$HHœ48 - bl_sec_segs_hash_verify_timestamp
+line	112158	570	1786907184238	5247434	crlf	D -        33 - pbl_populate_shared_data_and_exit_timestamp
+line	112159	570	1786907184238	5247495	crlf	S -    120856 - PBL, End
+line	112160	570	1786907184238	5247521	crlf	B -    135094 - SBL1, Start (MPM timestamp = 139995)
+line	112161	570	1786907184238	5247575	crlf	B -    248309 - SBL1 BUILD @ 23:11:42 on Apr  2 2026
+line	112162	570	1786907184238	5247629	crlf	B -    253642 - usb: hs_phy_nondrive_start
+line	112163	570	1786907184238	5247673	crlf	B -    258018 - usb: hs_phy_nondrive_finish
+line	112164	570	1786907184238	5247718	crlf	D -      8528 - sbl1_hw_init
+line	112165	570	1786907184238	5247748	crlf	D -        15 - boot_flash_init
+line	112166	570	1786907184284	5247783	crlf	B -    291707 - SHRM Image Loaded, Start
+line	112167	570	1786907184334	5247827	crlf	D -        36 - SHRM Image Loaded, Delta - (0 Bytes)
+line	112168	570	1786907184334	5247881	crlf	B -    298085 - Using boot chain :: Primary
+line	112169	570	1786907184334	5247926	crlf	D -      4694 - sbl1_update_partition_ids
+line	112170	570	1786907184334	5247969	crlf	D -      1209 - Auth Metadata
+line	112171	570	1786907184334	5248000	crlf	D -      7888 - sbl1_xblconfig_init
+line	112172	570	1786907184334	5248037	crlf	D -       440 - sbl1_feature_config_init
+line	112173	570	1786907184334	5248079	crlf	D -         3 - boot_config_data_table_default_init
+line	112174	570	1786907184334	5248132	crlf	D -        17 - sbl1_ddr_set_default_params
+line	112175	570	1786907184334	5248177	crlf	D -      4135 - boot_config_data_table_init
+line	112176	570	1786907184334	5248222	crlf	B -    327598 - CDT Version:3,Platform ID:32,Major ID:1,Minor ID:0,Subtype:1
+line	112177	570	1786907184334	5248300	crlf	D -      9482 - sbl1_hw_platform_pre_ddr
+line	112178	570	1786907184334	5248342	crlf	D -      5128 - devcfg init
+line	112179	570	1786907184405	5248373	crlf	B -    405504 - PM: PSI: b0x00_v0x14
+line	112180	570	1786907184445	5248413	crlf	B -    409046 - PM: Device Init # SPMI Transn: 4094
+line	112181	570	1786907184445	5248466	crlf	B -    412250 - PM: Driver Init # SPMI Transn: 237
+line	112182	570	1786907184445	5248518	crlf	B -    413717 - PM: CHG Init # SPMI Transn: 4335
+line	112183	570	1786907184445	5248568	crlf	D -     74758 - pmic XBL init
+line	112184	570	1786907184445	5248599	crlf	D -     10407 - vsense_railway_cpr init
+line	112185	570	1786907184445	5248640	crlf	D -     94846 - sbl1_hw_pre_ddr_init
+line	112186	570	1786907184485	5248680	crlf	D -         3 - boot_dload_handle_forced_dload_timeout
+line	112187	570	1786907184485	5248736	crlf	D -      2728 - sbl1_load_ddr_training_data
+line	112188	570	1786907184485	5248781	crlf	D -      4975 - sbl1_ddr_set_params
+line	112189	570	1786907184485	5248818	crlf	B -    451967 - DSF version = 20.0, DSF RPM version = 11.0
+line	112190	570	1786907184526	5248880	crlf	B -    452005 - Manufacturer ID = 255, Device Type = 7
+line	112191	570	1786907184526	5248936	crlf	B -    457226 - Rank 0 size = 2048 MB, Rank 1 size = 0 MB
+line	112192	570	1786907184526	5248995	crlf	B -    462099 - Max Frequency = 1804 MHz
+line	112193	570	1786907184526	5249037	crlf	B -    467237 - Row Hammer Check : DRAM supports unlimited MAC Value : MR24[OP2:0 = 0] & MR24[OP3 = 1] for CH0 & CS0
+line	112194	570	1786907184526	5249155	crlf	D -     27914 - sbl1_ddr_init
+line	112195	570	1786907184526	5249186	crlf	B -    481149 - do_ddr_training, Start
+line	112196	570	1786907184526	5249226	crlf	B -    487509 - Bootup frequency set to 1804800
+line	112197	570	1786907184526	5249275	crlf	D -      3707 - do_ddr_training, Delta
+line	112198	570	1786907184526	5249315	crlf	D -     10659 - sbl1_do_ddr_training
+line	112199	570	1786907184568	5249355	crlf	D -         2 - sbl1_hand_control_to_devprog_ddr_or_ddi
+line	112200	570	1786907184568	5249412	crlf	B -    498605 - Pimem init cmd, entry
+line	112201	570	1786907184568	5249451	crlf	D -      8552 - Pimem init cmd, exit
+line	112202	570	1786907184568	5249489	crlf	D -     14241 - sbl1_post_ddr_init
+line	112203	570	1786907184568	5249525	crlf	D -       272 - sbl1_hw_init_secondary
+line	112204	570	1786907184568	5249565	crlf	B -    521019 - APDP Image Loaded, Start
+line	112205	570	1786907184568	5249607	crlf	D -      1053 - APDP Image Loaded, Delta - (0 Bytes)
+line	112206	570	1786907184568	5249661	crlf	D -         3 - boot_dload_dump_security_regions
+line	112207	570	1786907184568	5249711	crlf	D -        14 - boot_dload_check
+line	112208	570	1786907184568	5249745	crlf	D -         2 - boot_cache_set_memory_barrier
+line	112209	570	1786907184568	5249792	crlf	D -         2 - boot_smem_debug_init
+line	112210	570	1786907184568	5249830	crlf	D -       263 - boot_smem_init
+line	112211	570	1786907184568	5249862	crlf	D -         3 - boot_smem_alloc_for_minidump
+line	112212	570	1786907184568	5249908	crlf	D -        45 - boot_smem_store_pon_status
+line	112213	570	1786907184568	5249952	crlf	D -        12 - sbl1_hw_platform_smem
+line	112214	570	1786907184568	5249991	crlf	D -       104 - boot_clock_init_rpm
+line	112215	570	1786907184568	5250028	crlf	D -         2 - boot_vsense_copy_to_smem
+line	112216	570	1786907184568	5250070	crlf	D -         2 - boot_share_flash_data
+line	112217	570	1786907184568	5250109	crlf	D -         7 - boot_populate_ram_partition_table
+line	112218	570	1786907184568	5250160	crlf	D -         7 - boot_populate_ddr_details_shared_table
+line	112219	570	1786907184568	5250216	crlf	D -         5 - sbl1_tlmm_init
+line	112220	570	1786907184568	5250248	crlf	D -         2 - sbl1_efs_handle_cookies
+line	112221	570	1786907184568	5250289	crlf	D -         1 - boot_apt_test
+line	112222	570	1786907184568	5250320	crlf	B -    587486 - OEM_MISC Image Loaded, Start
+line	112223	570	1786907184611	5250368	crlf	D -       719 - Auth Metadata
+line	112224	570	1786907184611	5250399	crlf	D -       216 - Segments hash check
+line	112225	570	1786907184651	5250438	crlf	D -      7121 - OEM_MISC Image Loaded, Delta - (7480 Bytes)
+line	112226	570	1786907184651	5250499	crlf	B -    600276 - QTI_MISC Image Loaded, Start
+line	112227	570	1786907184651	5250545	crlf	D -      2861 - QTI_MISC Image Loaded, Delta - (0 Bytes)
+line	112228	570	1786907184651	5250603	crlf	B -    609195 - PM: PM Total Mem Allocated: 1249 
+line	112229	570	1786907184651	5250654	crlf	D -      5043 - sbl1_pm_aop_pre_init_wrapper
+line	112230	570	1786907184651	5250700	crlf	B -    616625 - RPM Image Loaded, Start
+line	112231	570	1786907184651	5250741	crlf	D -       780 - Auth Metadata
+line	112232	570	1786907184651	5250772	crlf	D -      1337 - Segments hash check
+line	112233	570	1786907184651	5250809	crlf	D -     13967 - RPM Image Loaded, Delta - (220608 Bytes)
+line	112234	570	1786907184691	5250869	crlf	B -    633822 - QSEE Dev Config Image Loaded, Start
+line	112235	570	1786907184691	5250922	crlf	D -       855 - Auth Metadata
+line	112236	570	1786907184691	5250953	crlf	D -       476 - Segments hash check
+line	112237	570	1786907184691	5250990	crlf	D -     13087 - QSEE Dev Config Image Loaded, Delta - (45320 Bytes)
+line	112238	570	1786907184691	5251059	crlf	B -    655683 - QSEE Image Loaded, Start
+line	112239	570	1786907184691	5251101	crlf	D -     17670 - Auth Metadata
+line	112240	570	1786907184731	5251134	crlf	D -     16380 - Segments hash check
+line	112241	570	1786907184866	5251173	crlf	D -     88558 - QSEE Image Loaded, Delta - (3437540 Bytes)
+line	112242	570	1786907184866	5251233	crlf	D -        46 - sbl1_hw_play_vibr
+line	112243	570	1786907184866	5251268	crlf	B -    755152 - SEC Image Loaded, Start
+line	112244	570	1786907184866	5251309	crlf	D -       580 - SEC Image Loaded, Delta - (0 Bytes)
+line	112245	570	1786907184866	5251362	crlf	B -    759307 - QHEE Image Loaded, Start
+line	112246	570	1786907184866	5251404	crlf	D -       859 - Auth Metadata
+line	112247	570	1786907184866	5251435	crlf	D -      5954 - Segments hash check
+line	112248	570	1786907184866	5251472	crlf	D -     22980 - QHEE Image Loaded, Delta - (1495512 Bytes)
+line	112249	570	1786907184866	5251532	crlf	B -    787963 - STI Image Loaded, Start
+line	112250	570	1786907184866	5251573	crlf	D -      2766 - STI Image Loaded, Delta - (0 Bytes)
+line	112251	570	1786907184866	5251626	crlf	B -    796702 - APPSBL_DTB Image Loaded, Start
+line	112252	570	1786907184866	5251674	crlf	D -       683 - Auth Metadata
+line	112253	570	1786907184866	5251705	crlf	D -       498 - Segments hash check
+line	112254	570	1786907184866	5251742	crlf	D -     10149 - APPSBL_DTB Image Loaded, Delta - (81252 Bytes)
+line	112255	570	1786907184866	5251806	crlf	B -    812480 - APPSBL Image Loaded, Start
+line	112256	570	1786907184866	5251850	crlf	D -       686 - Auth Metadata
+line	112257	570	1786907184866	5251881	crlf	D -     15659 - Segments hash check
+line	112258	570	1786907184866	5251918	crlf	D -     40621 - APPSBL Image Loaded, Delta - (4133024 Bytes)
+line	112259	570	1786907184866	5251980	crlf	D -         5 - sbl1_appsbl_arch_determination
+line	112260	570	1786907184866	5252028	crlf	B -    862316 - SBL1, End
+line	112261	570	1786907184866	5252055	crlf	D -    730794 - SBL1, Delta
+line	112262	570	1786907184866	5252084	crlf	S - Flash Throughput, 80000 KB/s  (9454564 Bytes,  117793 us)
+line	112263	570	1786907184866	5252147	crlf	S - DDR Frequency, 1804 MHz
+line	112264	570	1786907184924	5252178	crlf	0       0.942767 FF-A: SPMC not present
+line	112265	570	1786907184974	5252221	crlf	0       0.942912 Hypervisor cold boot, version: gunyah-mobile-e173f3364 prod (2026-03-13 03:42:43 UTC)
+line	112266	570	1786907184974	5252325	crlf	0       0.957632 hyp_devcfg_smmu_s2_fault_handling_config:2454: No property found
+line	112267	570	1786907185014	5252410	crlf	0       0.982518 Failed to register KP
+line	112268	570	1786907185014	5252450	crlf	
+line	112269	570	1786907185014	5252452	crlf	0       0.990781 No LCP regions for Hypervisor
+line	112270	570	1786907185014	5252500	crlf	[RM]Resource Manager version: 5c64a775 (Mon Feb 23 04:23:30 2026 UTC)
+line	112271	570	1786907185054	5252573	crlf	[RM]Init completed, disabling UART
+line	112272	570	1786907185054	5252609	crlf	0       1.024916 Hypervisor UART is disabled!
+line	112273	570	1786907185054	5252656	crlf	
+line	112274	570	1786907185054	5252658	crlf	
+line	112275	570	1786907185054	5252660	crlf	
+line	112276	570	1786907185054	5252662	crlf	UEFI Start     [ 1029]
+line	112277	570	1786907185054	5252686	crlf	 - 0x05F801000 [ 1034] Sec.efi
+line	112278	570	1786907185054	5252718	crlf	ASLR        : ON
+line	112279	570	1786907185094	5252738	crlf	DEP         : ON (RTB)
+line	112280	570	1786907185094	5252762	crlf	Timer Delta : +5 mS
+line	112281	570	1786907185094	5252783	crlf	RAM Entry 0 : Base 0x0040000000  Size 0x0021800000
+line	112282	570	1786907185162	5252837	crlf	RAM Entry 1 : Base 0x0063900000  Size 0x00190FF000
+line	112283	570	1786907185162	5252889	crlf	RAM Entry 2 : Base 0x0080000000  Size 0x0040000000
+line	112284	570	1786907185200	5252943	crlf	Total Available RAM : 1960 MB (0x007A8FF000)
+line	112285	570	1786907185200	5252989	crlf	Total Installed RAM : 2048 MB (0x0080000000)
+line	112286	570	1786907185200	5253035	crlf	UEFI LOG buffer not registered for minidump
+line	112287	570	1786907185200	5253080	crlf	Multithread   : ON (Lib ver 1.2)
+line	112288	570	1786907185200	5253114	crlf	Init Cores   : 2
+line	112289	570	1786907185200	5253132	crlf	Init CPU core 1
+line	112290	570	1786907185242	5253151	crlf	TzFastcall() failed for TZ_IO_ACCESS_WRITE_ID, Status = (0x7)
+line	112291	570	1786907185242	5253214	crlf	ERROR: Failed to set DLOAD cookie
+line	112292	570	1786907185242	5253249	crlf	CONF File   : uefiplatLA.cfg
+line	112293	570	1786907185242	5253279	crlf	UEFI Ver    : 6.0.260212.BOOT.MXF.1.0.c1-00460-KODIAKLA-1
+line	112294	570	1786907185242	5253338	crlf	Build Info  : 64b Feb 12 2026 16:55:36
+line	112295	570	1786907185242	5253378	crlf	Boot Device : eMMC
+line	112296	570	1786907185242	5253398	crlf	PROD Mode   : FALSE
+line	112297	570	1786907185242	5253419	crlf	Retail      : FALSE
+line	112298	570	1786907185242	5253440	crlf	
+line	112299	570	1786907185242	5253442	crlf	DTB config    : client[0]..trace[0]..verbose[0]
+line	112300	570	1786907185242	5253491	crlf	 - 0x05A6C5000 [ 1154] DxeCore.efi
+line	112301	570	1786907185242	5253527	crlf	Loading DxeCore at 0x005A6C5000 EntryPoint=0x005A6C6000
+line	112302	570	1786907185295	5253586	crlf	HOBLIST address in DXE = 0x5A4B5018
+line	112303	570	1786907185334	5253625	crlf	FV Hob            0x5F800000 - 0x5FBEFFFF
+line	112304	570	1786907185334	5253668	crlf	FV Hob            0x5A6F9000 - 0x5AA3DFFF
+line	112305	570	1786907185562	5253713	crlf	FV2 Hob           0x5A6F9000 - 0x5AA3DFFF
+line	112306	570	1786907185562	5253756	crlf	                  631008B0-B2D1-410A-8B49-2C5C4D8ECC7E - 00000000-0000-0000-0000-000000000000
+line	112307	570	1786907185601	5253853	crlf	 - 0x05A641000 [ 1158] PcdDxe.efi
+line	112308	570	1786907185601	5253888	crlf	 - 0x05A65E000 [ 1158] EnvDxe.efi
+line	112309	570	1786907185601	5253923	crlf	 - 0x05A655000 [ 1159] RscRtDxe.efi
+line	112310	570	1786907185601	5253960	crlf	 - 0x05A64D000 [ 1159] SCHandlerRtDxe.efi
+line	112311	570	1786907185601	5254003	crlf	 - 0x05A18A000 [ 1159] RuntimeDxe.efi
+line	112312	570	1786907185601	5254042	crlf	 - 0x05A634000 [ 1159] ArmCpuDxe.efi
+line	112313	570	1786907185601	5254080	crlf	After Create Event Status (0x0)
+line	112314	570	1786907185601	5254113	crlf	 - 0x05A62B000 [ 1161] ArmGicDxe.efi
+line	112315	570	1786907185601	5254151	crlf	 - 0x05A624000 [ 1161] MetronomeDxe.efi
+line	112316	570	1786907185601	5254192	crlf	 - 0x05A61C000 [ 1161] ArmTimerDxe.efi
+line	112317	570	1786907185644	5254234	crlf	 - 0x05A612000 [ 1161] SmemDxe.efi
+line	112318	570	1786907185693	5254272	crlf	 - 0x05A5DC000 [ 1162] DALSys.efi
+line	112319	570	1786907185693	5254307	crlf	 - 0x05A5D4000 [ 1162] HWIODxeDriver.efi
+line	112320	570	1786907185738	5254351	crlf	 - 0x05A5C9000 [ 1162] ChipInfo.efi
+line	112321	570	1786907185738	5254388	crlf	 - 0x05A5C1000 [ 1162] PlatformInfoDxeDriver.efi
+line	112322	570	1786907185738	5254438	crlf	 - 0x05A587000 [ 1163] HALIOMMU.efi
+line	112323	570	1786907185738	5254475	crlf	 - 0x05A573000 [ 1169] ULogDxe.efi
+line	112324	570	1786907185738	5254511	crlf	 - 0x05A565000 [ 1169] GlinkDxe.efi
+line	112325	570	1786907185738	5254548	crlf	 - 0x05A54C000 [ 1172] NpaDxe.efi
+line	112326	570	1786907185738	5254583	crlf	Module cannot re-initialize DAL module environment
+line	112327	570	1786907185738	5254635	crlf	 - 0x05A541000 [ 1173] VcsDxe.efi
+line	112328	570	1786907185738	5254670	crlf	 - 0x05A51B000 [ 1173] ClockDxe.efi
+line	112329	570	1786907185738	5254707	crlf	 >>> Cluster 0: 1612800000 Hz
+line	112330	570	1786907185738	5254738	crlf	 - 0x05A181000 [ 1174] ShmBridgeDxeLA.efi
+line	112331	570	1786907185783	5254783	crlf	 - 0x05A170000 [ 1175] ScmDxeCompat.efi
+line	112332	570	1786907185783	5254824	crlf	 - 0x05A50F000 [ 1178] DALTLMM.efi
+line	112333	570	1786907185824	5254862	crlf	 - 0x05A504000 [ 1181] SPMI.efi
+line	112334	570	1786907185824	5254895	crlf	 - 0x05A4F4000 [ 1183] I2C.efi
+line	112335	570	1786907185824	5254927	crlf	 - 0x05A4E8000 [ 1184] BoardInfoDxe.efi
+line	112336	570	1786907185824	5254968	crlf	 - 0x05A167000 [ 1184] ResetRuntimeDxe.efi
+line	112337	570	1786907185824	5255012	crlf	 - 0x05A4E1000 [ 1184] Qup.efi
+line	112338	570	1786907185824	5255044	crlf	 - 0x05A4C1000 [ 1184] PmicDxe.efi
+line	112339	570	1786907185824	5255080	crlf	PM0: 55, 
+line	112340	570	1786907185824	5255091	crlf	Module cannot re-initialize DAL module environment
+line	112341	570	1786907185824	5255143	crlf	 - 0x05A15C000 [ 1190] DiskIoDxe.efi
+line	112342	570	1786907185824	5255181	crlf	 - 0x05A14F000 [ 1190] PartitionDxe.efi
+line	112343	570	1786907185824	5255222	crlf	 - 0x05A147000 [ 1190] EnglishDxe.efi
+line	112344	570	1786907185824	5255261	crlf	 - 0x05A13C000 [ 1191] FvSimpleFileSystem.efi
+line	112345	570	1786907185824	5255308	crlf	 - 0x05A11C000 [ 1191] SdccDxe.efi
+line	112346	570	1786907185824	5255344	crlf	 - 0x05A0A6000 [ 1244] Fat.efi
+line	112347	570	1786907185824	5255376	crlf	 - 0x05A096000 [ 1244] TzDxeLA.efi
+line	112348	570	1786907185824	5255412	crlf	 - 0x059FEC000 [ 1249] VariableDxe.efi
+line	112349	570	1786907185824	5255452	crlf	tz_armv8_smc_call failed, TzStatus = 0xFFFFFFFF,  SmcId = 0x32000105  
+line	112350	570	1786907185824	5255524	crlf	Status = 0x3
+line	112351	570	1786907185824	5255538	crlf	APP_REGION_NOTIFICATION_CMD: Syscall Not Supported, status 3
+line	112352	570	1786907185824	5255600	crlf	 - 0x05A00C000 [ 1567] QcomWDogDxe.efi
+line	112353	570	1786907185824	5255640	crlf	HW Wdog Setting from PCD : Disabled
+line	112354	570	1786907185870	5255679	crlf	 - 0x05A005000 [ 1568] WatchdogTimer.efi
+line	112355	570	1786907186733	5255723	crlf	 - 0x059B7F000 [ 1569] EmbeddedMonotonicCounter.efi
+line	112356	570	1786907186772	5255778	crlf	 - 0x059B76000 [ 1571] RealTimeClock.efi
+line	112357	570	1786907186772	5255820	crlf	 - 0x059B4F000 [ 1573] DevicePathDxe.efi
+line	112358	570	1786907186772	5255862	crlf	 - 0x059B3C000 [ 1573] CapsuleRuntimeDxe.efi
+line	112359	570	1786907186772	5255908	crlf	 - 0x059AF5000 [ 1573] HiiDatabase.efi
+line	112360	570	1786907186824	5255950	crlf	 - 0x059B6D000 [ 1574] FontDxe.efi
+line	112361	570	1786907186863	5255988	crlf	 - 0x0599CE000 [ 1580] QcomBds.efi
+line	112362	570	1786907186863	5256024	crlf	 - 0x059AEA000 [ 1591] DDRInfoDxe.efi
+line	112363	570	1786907186863	5256063	crlf	DALLOG Device [0x2000070]: HWIO: Unable to find "MC_CCMT
+line	112364	570	1786907186863	5256121	crlf	ERROR: Failed to map MCCC_MCCC_MSTR base address: 0x00000018
+line	112365	570	1786907186863	5256183	crlf	Error: Image at 00059AEA000 start failed: Not Found
+line	112366	570	1786907186863	5256236	crlf	 - 0x059B34000 [ 1593] FeatureEnablerDxe.efi
+line	112367	570	1786907186905	5256284	crlf	FeatureEnablerDxeInitialize: FeatureEnabler not supported for this chip
+line	112368	570	1786907186905	5256357	crlf	 - 0x059AAA000 [ 1594] FvDxe.efi
+line	112369	570	1786907186905	5256391	crlf	 - 0x059AEB000 [ 1594] PILProxyDxe.efi
+line	112370	570	1786907186905	5256431	crlf	 - 0x059A25000 [ 1595] PILDxe.efi
+line	112371	570	1786907186905	5256466	crlf	 - 0x059AD3000 [ 1596] IPCCDxe.efi
+line	112372	570	1786907186905	5256502	crlf	 - 0x059841000 [ 1597] SecurityStubDxe.efi
+line	112373	570	1786907186905	5256546	crlf	 - 0x059A9F000 [ 1599] SecurityDxe.efi
+line	112374	570	1786907186905	5256586	crlf	 - 0x059A97000 [ 1599] PrintDxe.efi
+line	112375	570	1786907186905	5256623	crlf	 - 0x059A15000 [ 1600] SPI.efi
+line	112376	570	1786907186905	5256655	crlf	 - 0x0599BE000 [ 1600] HSUART.efi
+line	112377	570	1786907186905	5256690	crlf	 - 0x059A62000 [ 1601] PmicGlinkDxe.efi
+line	112378	570	1786907186905	5256731	crlf	 - 0x059B20000 [ 1601] UsbPwrCtrlDxe.efi
+line	112379	570	1786907186948	5256775	crlf	PM_DT_PARSING_ERR: cagrhpispiUsbPwrCtrlLibConfig_GetHWInfo Hardware Info is not available 
+line	112380	570	1786907186988	5256869	crlf	UsbPwrCtrlLib_Init Initialize Hardware Configuration Error[Device Error] 
+line	112381	570	1786907186988	5256944	crlf	Error: Image at 00059B20000 start failed: Device Error
+line	112382	570	1786907186988	5257000	crlf	 - 0x059A73000 [ 1607] ChargerExDxe.efi
+line	112383	570	1786907186988	5257041	crlf	 - 0x059987000 [ 1607] UsbfnDwc3Dxe.efi
+line	112384	570	1786907186988	5257082	crlf	 - 0x059977000 [ 1608] UsbMsdDxe.efi
+line	112385	570	1786907186988	5257120	crlf	 - 0x0599B1000 [ 1608] UsbDeviceDxe.efi
+line	112386	570	1786907186988	5257161	crlf	 - 0x05994E000 [ 1609] UsbConfigDxe.efi
+line	112387	570	1786907186988	5257202	crlf	UsbConfigLibOpenProtocols: Failed to open Power control USB protocol Status =  (0xE)
+line	112388	570	1786907187030	5257290	crlf	UsbConfigLibOpenProtocols: gPmicNpaClientSS1 cannot be created
+line	112389	570	1786907187030	5257354	crlf	 - 0x0599A8000 [ 1609] UsbFastbootTransportDxe.efi
+line	112390	570	1786907187030	5257406	crlf	 - 0x05990F000 [ 1610] FastbootPlatformDxe.efi
+line	112391	570	1786907187030	5257454	crlf	 - 0x05996F000 [ 1610] SimpleTextInOutSerial.efi
+line	112392	570	1786907187030	5257504	crlf	 - 0x059965000 [ 1611] ButtonsDxe.efi
+line	112393	570	1786907187030	5257543	crlf	ButtonsDxe: Keypress PM SDAM read failed 
+line	112394	570	1786907187030	5257586	crlf	 - 0x059946000 [ 1612] TsensDxe.efi
+line	112395	570	1786907187030	5257623	crlf	 - 0x05993E000 [ 1612] LimitsDxe.efi
+line	112396	570	1786907187030	5257661	crlf	 - 0x059818000 [ 1613] GpiDxe.efi
+line	112397	570	1786907187030	5257696	crlf	 - 0x0597D1000 [ 1692] UCDxe.efi
+line	112398	570	1786907187030	5257730	crlf	 - 0x059907000 [ 1695] RngDxe.efi
+line	112399	570	1786907187030	5257765	crlf	 - 0x059837000 [ 1695] ConPlatformDxe.efi
+line	112400	570	1786907187030	5257808	crlf	 - 0x059A07000 [ 1695] ConSplitterDxe.efi
+line	112401	570	1786907187030	5257851	crlf	 - 0x0597FF000 [ 1696] GraphicsConsoleDxe.efi
+line	112402	570	1786907187030	5257898	crlf	 - 0x05980E000 [ 1697] SecRSADxe.efi
+line	112403	570	1786907187030	5257936	crlf	 - 0x0597AC000 [ 1698] HypDtFixupDxe.efi
+line	112404	570	1786907187030	5257978	crlf	HypDtFixupEntryPoint : Reading of OsConfigTableSelection failed,checking DT setting 
+line	112405	570	1786907187030	5258064	crlf	 - 0x059775000 [ 1702] DtPlatformDxe.efi
+line	112406	570	1786907187030	5258106	crlf	 - 0x0597F8000 [ 1703] RuntimeInitDxe.efi
+line	112407	570	1786907187030	5258149	crlf	 - 0x0597C8000 [ 1703] EsrtDxe.efi
+line	112408	570	1786907187030	5258185	crlf	 - 0x05971E000 [ 1704] FmpDxe.efi
+line	112409	570	1786907187077	5258222	crlf	InitStorageDiskInfo: storageInfo[0].guid: 12C55B20-25D3-41C9-8E06-282D94C676AD
+line	112410	570	1786907187117	5258304	crlf	InitStorageDiskInfo: storageInfo[1].guid: B9251EA5-3462-4807-86C6-8948B1B36163
+line	112411	570	1786907187117	5258384	crlf	InitStorageDiskInfo: storageInfo[2].guid: B615F1F5-5088-43CD-809C-A16E52487D00
+line	112412	570	1786907187117	5258464	crlf	
+line	112413	570	1786907187117	5258466	crlf	    Current SysFwVersion Entry info:
+line	112414	570	1786907187117	5258504	crlf	    ====================================
+line	112415	570	1786907187117	5258546	crlf	    Signature                 : 5245565746535953
+line	112416	570	1786907187117	5258596	crlf	    Revision                  : 0x10000
+line	112417	570	1786907187117	5258637	crlf	    VersionDataCrc32          : 0xD6AE50A5
+line	112418	570	1786907187117	5258681	crlf	    FwVersion                 : 0x10000
+line	112419	570	1786907187117	5258722	crlf	    LowestSupportedFwVersion  : 0x0
+line	112420	570	1786907187158	5258761	crlf	    ====================================
+line	112421	570	1786907187158	5258803	crlf	Platform: QRB_AGATTI IOT
+line	112422	570	1786907187158	5258829	crlf	Selected FW GUID =: A2C156D8-ABBF-49B4-9F3D-8C134DDE977B 
+line	112423	570	1786907187158	5258888	crlf	  Platform = 20 
+line	112424	570	1786907187158	5258906	crlf	FmpDxe(Qualcomm System Firmware Update Driver): Failed to get the controller state.  Status = Not Found
+line	112425	570	1786907187158	5259011	crlf	 - 0x0597BF000 [ 1728] SoftSKUDxe.efi
+line	112426	570	1786907187158	5259050	crlf	SoftSKUDxeInitialize: SoftSKU not supported for this chip
+line	112427	570	1786907187158	5259109	crlf	Error: Image at 000597BF000 start failed: Unsupported
+line	112428	570	1786907187158	5259164	crlf	 - 0x0597BF000 [ 1731] MinidumpTADxe.efi
+line	112429	570	1786907187158	5259206	crlf	smem_get_addr: SMEM get addr failed! smem_type=628MinidumpTADxe: Minidump TA loading not enabled.
+line	112430	570	1786907187158	5259305	crlf	Error: Image at 000597BF000 start failed: Load Error
+line	112431	570	1786907187158	5259359	crlf	 - 0x0596FE000 [ 1734] QcomChargerDxeLA.efi
+line	112432	570	1786907187158	5259404	crlf	Error: Image at 000596FE000 start failed: Access Denied
+line	112433	570	1786907187158	5259461	crlf	 - 0x0597C0000 [ 1745] UsbInitDxe.efi
+line	112434	570	1786907187158	5259500	crlf	 - 0x0594FF000 [ 1747] CryptoDxe.efi
+line	112435	570	1786907187158	5259538	crlf	 - 0x0597A3000 [ 1749] ParserDxe.efi
+line	112436	570	1786907187158	5259576	crlf	 - 0x05979C000 [ 1749] SerialPortDxe.efi
+line	112437	570	1786907187158	5259618	crlf	 - 0x059442000 [ 1751] Pkcs7VerifyDxe.efi
+line	112438	570	1786907187158	5259661	crlf	BDS Entry      [ 1752] 
+line	112439	570	1786907187158	5259686	crlf	Disp init wait [ 1752] 
+line	112440	570	1786907187158	5259711	crlf	EnvDxe locate display utils protocol failed with status: Not Found
+line	112441	570	1786907187202	5259781	crlf	-----------------------------
+line	112442	570	1786907187202	5259812	crlf	Platform Init  [ 1773] BDS
+line	112443	570	1786907187202	5259840	crlf	Boot Cycle : 1
+line	112444	570	1786907187241	5259858	crlf	Run  Cycle : 1
+line	112445	570	1786907187241	5259874	crlf	UEFI Ver   : 6.0.260212.BOOT.MXF.1.0.c1-00460-KODIAKLA-1
+line	112446	570	1786907187241	5259932	crlf	Platform           : IOT
+line	112447	570	1786907187241	5259958	crlf	Subtype            : 1
+line	112448	570	1786907187241	5259982	crlf	Boot Device        : eMMC
+line	112449	570	1786907187241	5260009	crlf	Chip Name          : QRB_AGATTI
+line	112450	570	1786907187241	5260042	crlf	Chip Ver           : 1.0
+line	112451	570	1786907187241	5260068	crlf	Chip Serial Number : 0xE1F9B69A
+line	112452	570	1786907187241	5260101	crlf	Boot Core  : 1612 MHz
+line	112453	570	1786907187241	5260124	crlf	rpmb_read_counter_pkt: Bad Result field = 0x7 
+line	112454	570	1786907187241	5260172	crlf	SDCC driver returns error that can not be decoded.
+line	112455	570	1786907187241	5260224	crlf	RPMB ReadCounterPkt failed, Result = 6
+line	112456	570	1786907187284	5260266	crlf	RPMB is not provisioned, UEFI Variables will be stored as Volatile. 
+line	112457	570	1786907187284	5260336	crlf	-----------------------------
+line	112458	570	1786907187284	5260367	crlf	Failed to launch default charger app, status: Load Error
+line	112459	570	1786907187284	5260425	crlf	MountRequiredFatPartitions: OsTrialBootStatus read failed, status = 0xE
+line	112460	570	1786907187284	5260498	crlf	EFI GUID based mount Success, GUID = C12A7328-F81F-11D2-BA4B-00A0C93EC93B Status = Success
+line	112461	570	1786907187284	5260590	crlf	TransitionNhlosFromPostUpdateToBoot: Starting NHLOS state transition validation
+line	112462	570	1786907187284	5260671	crlf	TransitionNhlosFromPostUpdateToBoot: Failed to read OsTrialBootStatus. Status 0xE
+line	112463	570	1786907187284	5260754	crlf	ClearCapsuleNV: GetVariable Returned Status - Not Found
+line	112464	570	1786907187284	5260811	crlf	EFI partition block size: 512
+line	112465	570	1786907187284	5260842	crlf	Capsule raw file not found in EFI partition. Trying to create one to reserve space for future updates
+line	112466	570	1786907187284	5260945	crlf	Successfully created file capsule raw file 'Persisted_Capsules.bin'.
+line	112467	570	1786907187284	5261015	crlf	Size of file capsule raw file: 0x6400000 bytes.
+line	112468	570	1786907187284	5261064	crlf	Used space in EFI Raw file: 0x248 bytes (0%)
+line	112469	570	1786907187284	5261110	crlf	No pending capsules found in EFI Raw file
+line	112470	570	1786907187284	5261153	crlf	Starting to flush any pending persisted capsules from media
+line	112471	570	1786907187326	5261216	crlf	Looking for 'BootNext' variable to look for EFI partition with mass-storage capsules
+line	112472	570	1786907187366	5261304	crlf	No 'BootNext' variable found to look for EFI partition with mass-storage capsules
+line	112473	570	1786907187366	5261387	crlf	Looking for 'BootOrder' variable to find EFI partition with mass-storage capsules
+line	112474	570	1786907187366	5261470	crlf	Could not find 'BootOrder' variable to find EFI partition with mass-storage capsules!
+line	112475	570	1786907187366	5261557	crlf	Looking for local EFI partition variable to find EFI partition with mass-storage capsules
+line	112476	570	1786907187366	5261648	crlf	GetPartitionHandlesForMassStorageCapsules: LocateHandleBuffer for  C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+line	112477	570	1786907187406	5261755	crlf	Found 1 EFI partitions in local device
+line	112478	570	1786907187406	5261795	crlf	GetMassStorageCapsuleCount returned - Not Found!
+line	112479	570	1786907187406	5261845	crlf	GetPersistedCapsuleCount returned - Not Found
+line	112480	570	1786907187406	5261892	crlf	InitCapsulePtrFromPersistedMedia returned - Not Found!
+line	112481	570	1786907187406	5261948	crlf	InitCapsulePtr returned - Not Found.
+line	112482	570	1786907187406	5261986	crlf	Starting to flush any pending persisted capsules from media
+line	112483	570	1786907187406	5262047	crlf	LocateProtocol(DPP) returned Status:Not Found
+line	112484	570	1786907187406	5262094	crlf	Locate pMorPpiProtocol failed 0xE 00000010
+line	112485	570	1786907187406	5262138	crlf	Platform Init End : 2816
+line	112486	570	1786907187406	5262164	crlf	-----------------------------
+line	112487	570	1786907187406	5262195	crlf	Write Log Buffer to FAT partition failed, Status = (Unsupported)
+line	112488	570	1786907187447	5262263	crlf	[QcomBds] BootOrder not found
+line	112489	570	1786907187447	5262294	crlf	[QcomBds] Trying booting from boot media enumeration
+line	112490	570	1786907187447	5262348	crlf	[QcomBds] Enumerating non-removable boot options
+line	112491	570	1786907187447	5262398	crlf	[QcomBds] Adding new boot/driver option Boot0000, Description: Non-removable Media
+line	112492	570	1786907187447	5262482	crlf	Booting option 0:(Boot0000) "Non-removable Media"
+line	112493	570	1786907187447	5262533	crlf	ClearCapsuleNV: GetVariable Returned Status - Not Found
+line	112494	570	1786907187447	5262590	crlf	FmpDeviceLock: smc:update rollback version succeeded, status: Success, pSysCallRsp->status: 1
+line	112495	570	1786907187447	5262685	crlf	ESRT DXE: Failed to get AwaitingCapsuleAcceptanceByOs, Status = 0xE
+line	112496	570	1786907187447	5262754	crlf	DtPlatformLoadDtbBlob qclinux_fit.img Loading Failed status=0xE
+line	112497	570	1786907187447	5262819	crlf	DtPlatformLoadDtbBlob Loading Legacy MultiDtb
+line	112498	570	1786907187447	5262866	crlf	LoadDtbOnReadyToBoot: no DT/ACPI preference found, defaulting to DT
+line	112499	570	1786907187447	5262935	crlf	OS DTB found. Model = Arduino UnoQ
+line	112500	570	1786907187447	5262971	crlf	DT Fixup Event triggered
+line	112501	570	1786907187447	5262997	crlf	FDT configuration table installed successfully
+line	112502	570	1786907187447	5263045	crlf	Reading of OsConfigTableSelection failed,checking DT settings
+line	112503	570	1786907187447	5263108	crlf	 Bad main_symbols in ufdt_overlay_do_fixups
+line	112504	570	1786907187447	5263153	crlf	Failed to apply devie tree
+line	112505	570	1786907187447	5263181	crlf	HypDtFixupEventNotifyFunc: Dtb apply overlay skipped
+line	112506	570	1786907187492	5263237	crlf	Added qcom,platform-parts-info successfully in BoardInfoDxe
+line	112507	570	1786907187492	5263298	crlf	Failed to get SKU information. Unsupported
+line	112508	570	1786907187532	5263344	crlf	UEFI Total : 1836 ms
+line	112509	570	1786907187532	5263366	crlf	POST Time      [ 2865] OS Loader
+line	112510	570	1786907187532	5263400	crlf	ConvertPages: failed to find range 140000000 - 140195FFF
+line	112511	570	1786907187532	5263458	crlf	 - 0x059118000 [ 2879] 
+line	112512	570	1786907187532	5263483	crlf	
+line	112513	570	1786907187532	5263485	crlf	SIROCCO UNOQ UEFI HANDOFF PASS
+line	112514	570	1786907187532	5263517	crlf	Start EBS        [ 2889] 
+line	112515	570	1786907187532	5263544	crlf	BDS: LogFs sync skipped, Unsupported
+line	112516	570	1786907187532	5263582	crlf	Successfully synced all UEFI tables
+line	112517	570	1786907187532	5263619	crlf	Sync Duration = 2 ms
+line	112518	570	1786907187532	5263641	crlf	Warning: Clearing A-bit !
+line	112519	570	1786907187532	5263668	crlf	App Log Flush : 623 ms
+line	112520	570	1786907187532	5263692	crlf	Gunyah based bootup
+line	112521	570	1786907187532	5263713	crlf	Exit EBS        [ 3526] UEFI End
+line	112522	570	1786907187576	5263749	crlf	SIROCCO UNOQ GENI POST-EXIT PASS
+line	112523	570	1786907187576	5263783	crlf	SIROCCO UEFI DRAM base=0x0000000040000000 end=0x00000000c0000000 span=0x0000000080000000
+line	112524	570	1786907187576	5263873	lf	Sirocco version 0.1.0-sirocco-unoq-mcu-uart-rxpark (mojo 1.1.0.dev2026081405) #1 SMP PREEMPT aarch64 build=57b8ed59ea886581
+line	112525	570	1786907187576	5263997	lf	CONFIG digest=b658e677bcc0aaa2
+line	112526	570	1786907187576	5264028	lf	BUILD fp=57b8ed59ea886581
+line	112527	570	1786907187576	5264054	lf	SIROCCO M0 aarch64 uncommitted
+line	112528	570	1786907187576	5264085	lf	ABI v=0x6a85a001ef52db6f mode=modular
+line	112529	570	1786907188773	5264124	lf	[    4.771945] <6> cpu0 led: USER1 green blink PASS gpio=42 acti
+line	112530	570	1786907188773	5264189	lf	[    4.778426] <6> cpu0 device init complete
+line	112531	570	1786907188773	5264234	lf	KTEST harness.assert_abort PASS
+line	112532	570	1786907188773	5264266	lf	KTEST harness.assume_skip SKIP unavailable
+line	112533	570	1786907188773	5264309	lf	KTEST harness.expect_continue PASS recorded=2
+line	112534	570	1786907188773	5264355	lf	KTEST m2_timer.1000 PASS
+line	112535	570	1786907188773	5264380	lf	THREADS ABCABCABC PASS
+line	112536	570	1786907188773	5264403	lf	KTEST m3_preempt PASS a=23001 b=22896
+line	112537	570	1786907188773	5264441	lf	KTEST sched.oracle PASS
+line	112538	570	1786907188773	5264465	lf	KTEST semaphore.oracle PASS
+line	112539	570	1786907188825	5264494	lf	KTEST mutex.oracle PASS
+line	112540	570	1786907188825	5264518	lf	KTEST condvar.oracle PASS
+line	112541	570	1786907188825	5264544	lf	KTEST events.oracle PASS
+line	112542	570	1786907188825	5264569	lf	KTEST fifo.oracle PASS
+line	112543	570	1786907188825	5264592	lf	KTEST lifo.oracle PASS
+line	112544	570	1786907188825	5264615	lf	KTEST queue.oracle PASS
+line	112545	570	1786907188825	5264639	lf	KTEST sleep.oracle PASS
+line	112546	570	1786907188825	5264663	lf	KTEST early_sleep.oracle PASS
+line	112547	570	1786907188825	5264693	lf	KTEST timeout.oracle PASS
+line	112548	570	1786907188825	5264719	lf	KTEST timer_part.oracle PASS
+line	112549	570	1786907188825	5264748	lf	KTEST threads_part.oracle PASS
+line	112550	570	1786907188825	5264779	lf	KTEST spinlock.oracle PASS
+line	112551	570	1786907188825	5264806	lf	EVT 1 sched_priority begin object
+line	112552	570	1786907188825	5264840	lf	EVT 2 sched_priority observed object
+line	112553	570	1786907188825	5264877	lf	EVT 3 sched_fifo begin object
+line	112554	570	1786907188825	5264907	lf	EVT 4 sched_fifo observed object
+line	112555	570	1786907188825	5264940	lf	EVT 5 yield_rotation begin object
+line	112556	570	1786907188825	5264974	lf	EVT 6 yield_rotation observed object
+line	112557	570	1786907188825	5265011	lf	EVT 7 sem_priority begin object
+line	112558	570	1786907188868	5265044	lf	EVT 8 sem_priority observed object
+line	112559	570	1786907188868	5265079	lf	EVT 9 sem_fifo begin object
+line	112560	570	1786907188909	5265108	lf	EVT 10 sem_fifo observed object
+line	112561	570	1786907188909	5265140	lf	EVT 11 mutex_pi begin object
+line	112562	570	1786907188949	5265170	lf	EVT 12 mutex_pi observed object
+line	112563	570	1786907188949	5265202	lf	EVT 13 event_any_safe begin object
+line	112564	570	1786907188949	5265237	lf	EVT 14 event_any_safe observed object
+line	112565	570	1786907188949	5265275	lf	EVT 15 event_all_safe begin object
+line	112566	570	1786907188949	5265310	lf	EVT 16 event_all_safe observed object
+line	112567	570	1786907188949	5265348	lf	EVT 17 timeout_order begin object
+line	112568	570	1786907188949	5265382	lf	EVT 18 timeout_order observed object
+line	112569	570	1786907188949	5265419	lf	EVT 19 queue_order begin object
+line	112570	570	1786907188949	5265451	lf	EVT 20 queue_order observed object
+line	112571	570	1786907188949	5265486	lf	EVT 21 msgq_fifo begin object
+line	112572	570	1786907188949	5265516	lf	EVT 22 msgq_fifo observed object
+line	112573	570	1786907188949	5265549	lf	EVT 23 msgq_full begin object
+line	112574	570	1786907188949	5265579	lf	EVT 24 msgq_full observed object
+line	112575	570	1786907188991	5265613	lf	EVT 25 msgq_purge begin object
+line	112576	570	1786907188991	5265644	lf	EVT 26 msgq_purge observed object
+line	112577	570	1786907188991	5265678	lf	EVT 27 stack_lifo begin object
+line	112578	570	1786907188991	5265709	lf	EVT 28 stack_lifo observed object
+line	112579	570	1786907188991	5265743	lf	EVT 29 stack_empty begin object
+line	112580	570	1786907188991	5265775	lf	EVT 30 stack_empty observed object
+line	112581	570	1786907188991	5265810	lf	EVT 31 slab_exhaust begin object
+line	112582	570	1786907188991	5265843	lf	EVT 32 slab_exhaust observed object
+line	112583	570	1786907188991	5265879	lf	EVT 33 slab_reuse begin object
+line	112584	570	1786907188991	5265910	lf	EVT 34 slab_reuse observed object
+line	112585	570	1786907188991	5265944	lf	EVT 35 heap_alloc_free begin object
+line	112586	570	1786907188991	5265980	lf	EVT 36 heap_alloc_free observed object
+line	112587	570	1786907188991	5266019	lf	EVT 37 poll_signal begin object
+line	112588	570	1786907188991	5266051	lf	EVT 38 poll_signal observed object
+line	112589	570	1786907188991	5266086	lf	EVT 39 timer_expiry begin object
+line	112590	570	1786907188991	5266119	lf	EVT 40 timer_expiry observed object
+line	112591	570	1786907188991	5266155	lf	EVT 41 timer_status begin object
+line	112592	570	1786907188991	5266188	lf	EVT 42 timer_status observed object
+line	112593	570	1786907188991	5266224	lf	EVT 43 timer_stop begin object
+line	112594	570	1786907188991	5266255	lf	EVT 44 timer_stop observed object
+line	112595	570	1786907188991	5266289	lf	EVT 45 work_submit begin object
+line	112596	570	1786907188991	5266321	lf	EVT 46 work_submit observed object
+line	112597	570	1786907188991	5266356	lf	EVT 47 work_flush begin object
+line	112598	570	1786907188991	5266387	lf	EVT 48 work_flush observed object
+line	112599	570	1786907188991	5266421	lf	EVT 49 delayable_cancel begin object
+line	112600	570	1786907188991	5266458	lf	EVT 50 delayable_cancel observed object
+line	112601	570	1786907188991	5266498	lf	EVT 51 sem_limit begin object
+line	112602	570	1786907188991	5266528	lf	EVT 52 sem_limit observed object
+line	112603	570	1786907188991	5266561	lf	EVT 53 sem_reset begin object
+line	112604	570	1786907189035	5266592	lf	EVT 54 sem_reset observed object
+line	112605	570	1786907189035	5266625	lf	EVT 55 event_clear begin object
+line	112606	570	1786907189076	5266658	lf	EVT 56 event_clear observed object
+line	112607	570	1786907189076	5266693	lf	EVT 57 queue_remove begin object
+line	112608	570	1786907189076	5266726	lf	EVT 58 queue_remove observed object
+line	112609	570	1786907189076	5266762	lf	EVT 59 uptime_monotonic begin object
+line	112610	570	1786907189076	5266799	lf	EVT 60 uptime_monotonic observed object
+line	112611	570	1786907189076	5266839	lf	KTEST device.oracle PASS
+line	112612	570	1786907189076	5266864	lf	KTEST context.oracle PASS
+line	112613	570	1786907189076	5266890	lf	KTEST workq.oracle PASS
+line	112614	570	1786907189076	5266914	lf	KTEST msgq.oracle PASS
+line	112615	570	1786907189076	5266937	lf	KTEST stack.oracle PASS
+line	112616	570	1786907189076	5266961	lf	KTEST mem_slab.oracle PASS
+line	112617	570	1786907189076	5266988	lf	KTEST pipe.oracle PASS
+line	112618	570	1786907189076	5267011	lf	KTEST mem_heap.oracle PASS
+line	112619	570	1786907189076	5267038	lf	KTEST poll.oracle PASS
+line	112620	570	1786907189076	5267061	lf	KTEST timer.oracle PASS
+line	112621	570	1786907189120	5267086	lf	KTEST mbox.oracle PASS
+line	112622	570	1786907189120	5267109	lf	KTEST obj_core.oracle PASS
+line	112623	570	1786907189120	5267136	lf	KTEST pending.oracle PASS
+line	112624	570	1786907189159	5267163	lf	KTEST profiling.oracle PASS
+line	112625	570	1786907189159	5267191	lf	KTEST sys_timer.oracle PASS
+line	112626	570	1786907189159	5267219	lf	KTEST tickless.oracle PASS
+line	112627	570	1786907189159	5267246	lf	KTEST threads.oracle PASS
+line	112628	570	1786907189159	5267272	lf	KTEST cleanup.oracle PASS
+line	112629	570	1786907189159	5267298	lf	KTEST fatal.oracle PASS
+line	112630	570	1786907189159	5267322	lf	KTEST common.oracle PASS
+line	112631	570	1786907189159	5267347	lf	SMP STEP 6 0000000000000004
+line	112632	570	1786907189159	5267375	lf	SMP STEP 0 0000000048000010
+line	112633	570	1786907189159	5267403	lf	SMP STEP 1 0000000000000001
+line	112634	570	1786907189159	5267431	lf	SMP STEP 2 0000000100000000
+line	112635	570	1786907189159	5267459	lf	SMP STEP 1 0000000000000002
+line	112636	570	1786907189159	5267487	lf	SMP STEP 2 0000000200000000
+line	112637	570	1786907189159	5267515	lf	SMP STEP 1 0000000000000003
+line	112638	570	1786907189159	5267543	lf	SMP STEP 2 0000000300000000
+line	112639	570	1786907189159	5267571	lf	SMP STEP 3 000000000000000f
+line	112640	570	1786907189159	5267599	lf	SMP STEP 4 000000000000000f
+line	112641	570	1786907189159	5267627	lf	SMP STEP 5 000000000000000f
+line	112642	570	1786907189159	5267655	lf	SMP PSCI CPU_ON SGI PASS
+line	112643	570	1786907189201	5267681	lf	APP EFI stage=00000000 bytes=00001140 PASS
+line	112644	570	1786907189201	5267724	lf	APP admit
+line	112645	570	1786907189201	5267734	lf	APP verified
+line	112646	570	1786907189201	5267747	lf	APP 1
+line	112647	570	1786907189201	5267753	lf	APP 2
+line	112648	570	1786907189201	5267759	lf	APP 3
+line	112649	570	1786907189201	5267765	lf	APP MMU asid=86 wx guard
+line	112650	570	1786907189201	5267790	lf	[    5.191164] <6> cpu0 t86 mcu-uart: start
+line	112651	570	1786907189201	5267834	lf	[    5.195563] <6> cpu0 t86 mcu-uart: ready probe retained-baud=1152
+line	112652	570	1786907189201	5267903	lf	[    5.202459] <6> cpu0 t86 mcu-uart: tx SKIP resource-unowned
+line	112653	570	1786907189585	5267967	lf	[    5.625420] <6> cpu0 t86 mcu-uart: rx idle park
+#meta	key	value
+meta	pending_tail	sirocco> 
+meta	pending_tail_ts	1786908863186

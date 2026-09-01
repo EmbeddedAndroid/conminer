@@ -1,0 +1,110 @@
+# `tfa` — Trusted Firmware-A (§A.4).
+#
+# The easiest profile to classify: severity is a fixed-width prefix. Each boot
+# loader stage (BL1/BL2/BL31) is its own sub-stage for the stage machine, so
+# "did it die in BL31 or after handoff?" is answerable directly.
+#
+# TF-A has no terminator: it spins after a panic. The record closes on silence
+# (DEAD_AIR) or on the BL1 banner reappearing, which is why record_timeout_s is
+# raised above the global default.
+
+name = 'tfa'
+stage = 'bl31'
+stage_rank = 10
+record_timeout_s = 20
+use_generic = true
+
+context = [
+  '^x\d{1,2}\s*=\s*0x[0-9a-fA-F]+',
+  '^(scr_el3|sctlr_el\d|esr_el3|far_el3|spsr_el3|elr_el3|cptr_el3|tcr_el3|ttbr0_el3|cpuectlr\w*|gicd\w*|gicc\w*)\s*=',
+  '^\s*(sp_el0|isr_el1|hcr_el2)\s*=',
+]
+backtrace_headers = ['Backtrace:']
+reset_markers = ['NOTICE:\s+BL1:\s+v\d']
+mine_strip = ['^(NOTICE|ERROR|WARNING|INFO|VERBOSE):\s+']
+
+[[banners]]
+pattern = 'NOTICE:\s+BL1:\s+v\d'
+stage = 'bl1'
+rank = 10
+
+[[banners]]
+pattern = 'NOTICE:\s+BL2:\s+v\d'
+stage = 'bl2'
+rank = 11
+
+[[banners]]
+pattern = 'NOTICE:\s+BL31:\s+v\d'
+stage = 'bl31'
+rank = 12
+
+[[banners]]
+pattern = 'NOTICE:\s+BL1:\s+Booting BL2'
+stage = 'bl1'
+rank = 10
+
+[[severity]]
+pattern = '^ERROR:'
+level = 'err'
+
+[[severity]]
+pattern = '^WARNING:'
+level = 'warn'
+
+[[severity]]
+pattern = '^NOTICE:'
+level = 'notice'
+
+[[severity]]
+pattern = '^INFO:'
+level = 'info'
+
+[[severity]]
+pattern = '^VERBOSE:'
+level = 'debug'
+
+[[triggers]]
+pattern = 'PANIC at PC\s*:\s*0x[0-9a-fA-F]+'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Unhandled Exception in EL3'
+severity = 'emerg'
+
+[[triggers]]
+pattern = 'Unexpected BL31 exception'
+severity = 'emerg'
+
+[[triggers]]
+pattern = '^ASSERT:\s'
+severity = 'crit'
+
+[[triggers]]
+pattern = '^Failed to load BL\d'
+severity = 'crit'
+
+[[triggers]]
+pattern = 'Unhandled Exception from EL\d'
+severity = 'emerg'
+
+[extract]
+severity_prefix = '^(NOTICE|ERROR|WARNING|INFO|VERBOSE):'
+
+# §F2. WHAT IS RUNNING, not which stage. BL31 on this rig stamps its build
+# fingerprint into the release string (NORDFP-260705-162552) and the standing
+# rig rule is to verify it every boot -- so it must be one query, not a search.
+[[version_banners]]
+pattern = 'NOTICE:\s+BL1:\s+(?P<version>v[\d.]+\S*)'
+component = 'bl1'
+
+[[version_banners]]
+pattern = 'NOTICE:\s+BL2:\s+(?P<version>v[\d.]+\S*)'
+component = 'bl2'
+
+[[version_banners]]
+pattern = 'NOTICE:\s+BL31:\s+(?P<version>v[\d.]+\S*)'
+component = 'bl31'
+
+[[version_banners]]
+pattern = 'NOTICE:\s+BL31:\s+Built\s*:\s*(?P<version>.+?)\s*$'
+component = 'bl31_built'

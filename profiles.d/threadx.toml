@@ -1,0 +1,46 @@
+# `threadx` — ThreadX / Azure RTOS (§A.8).
+#
+# ThreadX itself is silent on failure: `_tx_` error codes are returned, not
+# printed, and `TX_STACK_ERROR` reaches the console only through a user
+# `tx_thread_stack_error_notify` handler. The reliable trigger is therefore the
+# vendor HardFault handler dumping Cortex-M `SCB` register names — those tokens,
+# not any ThreadX string, are what identify the crash.
+#
+# Corpus-driven per-project profiles are expected; this is the seed.
+
+name = 'threadx'
+stage = 'threadx'
+stage_rank = 30
+use_generic = true
+
+context = [
+  '(?i)^\s*(CFSR|HFSR|BFAR|MMFAR|DFSR|AFSR|SHCSR)\s*[:=]\s*0x[0-9a-fA-F]+',
+  '^\s*(r\d{1,2}|sp|lr|pc|xpsr|psr|msp|psp)\s*[:=]\s*0x[0-9a-fA-F]+',
+  '(?i)^\s*(current thread|thread name|stack pointer)\s*[:=]',
+]
+backtrace_headers = [
+  'Call stack:',
+  'Backtrace:',
+]
+lookback = [
+  '(?i)^\s*(CFSR|HFSR|BFAR|MMFAR|DFSR|AFSR)\s*[:=]',
+  '(?i)^\s*(usage|bus|memmanage) fault',
+]
+reset_markers = ['(?i)(system reset|resetting)']
+
+[[banners]]
+pattern = 'ThreadX .*(v|version )\d+\.\d+|Azure RTOS ThreadX'
+
+[[triggers]]
+pattern = '(?i)hard\s?fault'
+severity = 'emerg'
+lookback = true
+
+[[triggers]]
+pattern = 'TX_(STACK_ERROR|THREAD_ERROR|POOL_ERROR)'
+severity = 'crit'
+
+[[triggers]]
+pattern = '(?i)\bassert(ion)? (failed|fail)\b'
+severity = 'crit'
+lookback = true

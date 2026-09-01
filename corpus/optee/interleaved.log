@@ -1,0 +1,16 @@
+[    1.100000] Booting Linux on physical CPU 0x0000000000
+[    1.100100] Linux version 6.12.9 (build@lab) (gcc 14.2.0) #1 SMP
+I/TC: OP-TEE version: 4.5.0 (gcc version 14.2.0)
+I/TC: Primary CPU initializing
+I/TC: Primary CPU switching to normal world boot
+[    1.200000] optee: probing for conduit method
+[    1.201000] optee: revision 4.5 (fd9b0d8a)
+E/TC:0 0 tee_ta_init_pseudo_ta_session:283 Can't find TA cff7d191
+E/LD:  Can't find ELF cff7d191-9835-4b8c-b3a1-2f9a6dbea59f
+E/TC:0 0 Core data-abort at address 0x0000000000000010
+E/TC:0 0  esr 0x96000006  ttbr0 0x0e100000  ttbr1 0x00000000
+E/TC:0 0 Call stack:
+E/TC:0 0  0x000000000e10a4b0
+E/TC:0 0  0x000000000e1092c4
+E/TC:0 0 TEE load address @ 0x0e100000
+[    1.300000] optee: rpc thread failed -22

@@ -1,0 +1,112 @@
+# `uefi` — UEFI / EDK2 (§A.3).
+#
+# This is the profile that proves the timeout-close path: EDK2 typically
+# dead-loops (`CpuDeadLoop`) after a fault and prints no terminator at all, so
+# the record closes on DEAD_AIR. `record_timeout_s` is raised accordingly, and
+# `ansi_strip` is on because EDK2 output is heavy with colour and cursor moves
+# that would otherwise fragment every template.
+
+name = 'uefi'
+stage = 'uefi'
+stage_rank = 22
+record_timeout_s = 25
+ansi_strip = true
+use_generic = true
+
+context = [
+  '^ExceptionData - ',
+  '^\s*(RIP|RSP|RBP|RAX|RBX|RCX|RDX|RSI|RDI|CS|DS|SS|ES|FS|GS|CR[0-4]|RFLAGS)\s+- ',
+  '^\s*X\d{1,2}\s+:',
+  '^\s*(ESR|FAR|ELR|SPSR|SP|LR|FP)\s+:',
+  '^!!!! Find th',
+  '^\s*[0-9A-F]{8,16}:( [0-9A-F]{2})+',
+]
+backtrace_headers = [
+  'Call Stack:',
+  'Stack dump:',
+]
+terminators = [
+  'CpuDeadLoop',
+  '!!!! Could not find image',
+]
+lookback = ['ASSERT_EFI_ERROR \(Status = ']
+reset_markers = [
+  'UEFI firmware \(version',
+  'ResetSystem',
+]
+
+[[banners]]
+pattern = 'UEFI firmware \(version'
+
+[[banners]]
+pattern = '^\[Bds\]'
+
+[[banners]]
+pattern = 'BdsDxe: loading Boot'
+
+[[banners]]
+pattern = 'TianoCore|EDK II'
+
+[[triggers]]
+pattern = 'ASSERT [^ ]+\(\d+\):'
+severity = 'crit'
+lookback = true
+
+[[triggers]]
+pattern = 'ASSERT_EFI_ERROR \(Status = '
+severity = 'crit'
+
+[[triggers]]
+pattern = 'Synchronous Exception at 0x[0-9a-fA-F]+'
+severity = 'emerg'
+
+[[triggers]]
+pattern = '!!!! (X64|IA32) Exception Type - '
+severity = 'emerg'
+
+[[triggers]]
+pattern = '(DXE|PEI)_ASSERT'
+severity = 'crit'
+
+[[prompts]]
+pattern = '(^|\n)(Shell> |FS\d:\\[^ ]*> ) *$'
+kind = 'bootloader'
+
+[extract]
+uefi_version = 'UEFI firmware \(version (?P<uefi_version>\S+)'
+
+# §F2. Qualcomm XBL/UEFI identify themselves in three different shapes.
+[[version_banners]]
+pattern = 'UEFI Ver\s*:\s*(?P<version>.+?)\s*$'
+component = 'uefi'
+
+[[version_banners]]
+pattern = 'QC_IMAGE_VERSION_STRING\s*=\s*(?P<version>.+?)\s*$'
+component = 'xbl'
+
+[[version_banners]]
+pattern = 'Chip Name\s*:\s*(?P<version>.+?)\s*$'
+component = 'chip'
+
+# §F3. Qualcomm's XBL timing grammar. `B - <us> - <label>` and `D - <us> -
+# <label>` differ in BOTH fields, so the generic templatizer generalised both and
+# every timing line in the boot collapsed into one `D - <*> - <*>` template --
+# 6,755 occurrences on the ADP, and per-label timing was unaskable. Clustering
+# keys on the LEADING tokens, so the label goes first and the number last: one
+# template per label, with the microseconds in a slot a metric can be pinned to.
+[[structured_lines]]
+# XBL right-aligns the microseconds, so the separators carry runs of spaces:
+# `B -      1234 - sbl1_ddr_init`.
+pattern = '^(?P<prefix>[BD])\s+-\s+(?P<value>\d+)\s+-\s+(?P<label>\S.*?)\s*$'
+# The LABEL LEADS. Drain routes on token count then leading tokens, so a
+# label in second position still generalises away: `B - sbl1_ddr_init - 1234`
+# and `B - sbl1_hw_init - 5678` differ in two of four tokens and merge back into
+# `B - <*> - <*>`, which is the bug. Leading with the label puts each one on its
+# own branch, and B/D stay distinct because they are different events (begin and
+# done), not two spellings of one.
+rewrite = '{label} {prefix} {value}'
+
+# `S - DDR Frequency, 3196 MHz`: the key is the identity, the value varies.
+[[structured_lines]]
+pattern = '^S\s+-\s+(?P<label>[^,]+),\s*(?P<value>.+?)\s*$'
+rewrite = '{label} S {value}'

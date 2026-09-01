@@ -1,0 +1,24 @@
+U-Boot SPL 2026.01 (Jan 04 2026 - 12:00:11 +0000)
+Trying to boot from MMC1
+NOTICE:  BL31: v2.11(release):v2.11
+NOTICE:  BL31: Built : 12:00:07, Jan  4 2026
+
+U-Boot 2026.01 (Jan 04 2026 - 12:00:11 +0000)
+
+CPU:   ARM Cortex-A78 rev 1
+Model: IQ-10 EVK
+DRAM:  8 GiB
+Core:  62 devices, 22 uclasses, devicetree: separate
+MMC:   mmc@7c4000: 0
+Loading Environment from MMC... OK
+baudrate=115200
+bootdelay=2
+ethaddr=00:11:22:33:44:55
+ipaddr=10.0.0.5
+serverip=10.0.0.1
+In:    serial@a90000
+Out:   serial@a90000
+Err:   serial@a90000
+Net:   eth0: ethernet@23040000
+Hit any key to stop autoboot:  2  1  0 
+Starting kernel ...

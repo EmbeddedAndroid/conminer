@@ -1,0 +1,46 @@
+# `cros-ec` — Chrome EC (§A.11.7).
+#
+# `Reset cause:` is first-class reset attribution, which is what makes an EC
+# console worth correlating against the AP console in a multi-console target.
+
+name = 'cros-ec'
+stage = 'ec'
+stage_rank = 5
+use_generic = true
+
+context = [
+  '^\s*(r\d{1,2}|sp|lr|pc|xpsr|psr|mmfs|shcsr|hfsr|dfsr)\s*[:=]',
+  '^\s*=== END OF EXCEPTION',
+  '^Reset cause:',
+]
+terminators = ['=== END OF EXCEPTION']
+reset_markers = [
+  '^Reset cause:',
+  'Image: R[OW]',
+]
+mine_strip = ['^\[\s*[0-9.]+ ']
+
+[[banners]]
+pattern = '^\[[0-9.]+ (Image: R[OW]|--- UART initialized)'
+
+[[banners]]
+pattern = 'Chrome EC|^\[[0-9.]+ Console is enabled'
+
+[[triggers]]
+pattern = '=== PROCESS EXCEPTION'
+severity = 'emerg'
+
+[[triggers]]
+pattern = '^\[[0-9.]+ Watchdog!'
+severity = 'crit'
+
+[[triggers]]
+pattern = '(?i)assertion.*failed'
+severity = 'crit'
+
+[[prompts]]
+pattern = '(^|\n)> *$'
+kind = 'monitor'
+
+[extract]
+reset_cause = '^Reset cause: (?P<reset_cause>.+)$'
