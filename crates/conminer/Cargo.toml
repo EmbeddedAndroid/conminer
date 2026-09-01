@@ -1,0 +1,253 @@
+[package]
+name = "conminer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Serial console template miner for LLM agents — discoveryd, minerd, mcpd, ingest"
+default-run = "conminer"
+# `benches/pipeline.rs` is declared as a [[test]] below (it is a harness test
+# gated on `--ignored`, not a criterion bench), so auto-discovery would claim
+# the same file for a second target.
+autobenches = false
+
+[lib]
+name = "conminer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "conminer"
+path = "src/main.rs"
+
+[dependencies]
+conminer-core = { path = "../conminer-core" }
+conminer-mcp = { path = "../conminer-mcp" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+globset.workspace = true
+libc.workspace = true
+axum.workspace = true
+futures.workspace = true
+async-stream.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+sha2.workspace = true
+hex.workspace = true
+conminer-testkit = { path = "../conminer-testkit" }
+conminer-mcp = { path = "../conminer-mcp" }
+conminer-core = { path = "../conminer-core" }
+proptest.workspace = true
+tempfile.workspace = true
+insta.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+regex.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
+libc.workspace = true
+
+# §13 test-suite catalog — one named target per suite.
+[[test]]
+name = "fleet"
+path = "tests/fleet/main.rs"
+
+[[test]]
+name = "linesplit"
+path = "tests/linesplit/main.rs"
+
+[[test]]
+name = "drain"
+path = "tests/drain/main.rs"
+
+[[test]]
+name = "config"
+path = "tests/config/main.rs"
+
+[[test]]
+name = "framer-linux"
+path = "tests/framer_linux/main.rs"
+
+[[test]]
+name = "framer-uboot"
+path = "tests/framer_uboot/main.rs"
+
+[[test]]
+name = "framer-uefi"
+path = "tests/framer_uefi/main.rs"
+
+[[test]]
+name = "framer-tfa"
+path = "tests/framer_tfa/main.rs"
+
+[[test]]
+name = "framer-optee"
+path = "tests/framer_optee/main.rs"
+
+[[test]]
+name = "framer-zephyr"
+path = "tests/framer_zephyr/main.rs"
+
+[[test]]
+name = "framer-freertos"
+path = "tests/framer_freertos/main.rs"
+
+[[test]]
+name = "framer-threadx"
+path = "tests/framer_threadx/main.rs"
+
+[[test]]
+name = "stagemachine"
+path = "tests/stagemachine/main.rs"
+
+[[test]]
+name = "store"
+path = "tests/store/main.rs"
+
+[[test]]
+name = "ingest"
+path = "tests/ingest/main.rs"
+
+[[test]]
+name = "search"
+path = "tests/search/main.rs"
+
+[[test]]
+name = "tools"
+path = "tests/tools/main.rs"
+
+[[test]]
+name = "notify"
+path = "tests/notify/main.rs"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+
+[[test]]
+name = "runner"
+path = "tests/runner/main.rs"
+
+[[test]]
+name = "state"
+path = "tests/state/main.rs"
+
+[[test]]
+name = "epochs"
+path = "tests/epochs/main.rs"
+
+[[test]]
+name = "agreement"
+path = "tests/agreement/main.rs"
+
+[[test]]
+name = "follow"
+path = "tests/follow_suite/main.rs"
+
+[[test]]
+name = "line"
+path = "tests/line/main.rs"
+
+[[test]]
+name = "discovery"
+path = "tests/discovery/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+
+[[test]]
+name = "bench"
+path = "benches/pipeline.rs"
+
+[[test]]
+name = "fuzz"
+path = "tests/fuzz/main.rs"
+
+[[test]]
+name = "verdicts"
+path = "tests/verdicts/main.rs"
+
+[[test]]
+name = "values"
+path = "tests/values/main.rs"
+
+[[test]]
+name = "baselines"
+path = "tests/baselines/main.rs"
+
+[[test]]
+name = "watches"
+path = "tests/watches/main.rs"
+
+[[test]]
+name = "budget"
+path = "tests/budget/main.rs"
+
+[[test]]
+name = "dash"
+path = "tests/dash/main.rs"
+
+[[test]]
+name = "spine"
+path = "tests/spine/main.rs"
+
+[[test]]
+name = "bisect"
+path = "tests/bisect/main.rs"
+
+[[test]]
+name = "decode"
+path = "tests/decode/main.rs"
+
+[[test]]
+name = "absence"
+path = "tests/absence/main.rs"
+
+[[test]]
+name = "provenance"
+path = "tests/provenance/main.rs"
+
+[[test]]
+name = "deploy"
+path = "tests/deploy/main.rs"
+
+[[test]]
+name = "surface"
+path = "tests/surface/main.rs"
+
+[[test]]
+name = "browser"
+path = "tests/browser/main.rs"
+
+[[test]]
+name = "uncovered"
+path = "tests/uncovered/main.rs"
+
+[[test]]
+name = "round3"
+path = "tests/round3/main.rs"
+
+[[test]]
+name = "round4"
+path = "tests/round4/main.rs"
+
+[[test]]
+name = "features"
+path = "tests/features/main.rs"
+
+[[test]]
+name = "actuation"
+path = "tests/actuation/main.rs"
+
+[[test]]
+name = "reports"
+path = "tests/reports/main.rs"

@@ -1,0 +1,2192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>conminer consoles</title>
+<style>
+/* Everything is inlined on purpose: a lab host usually has no route to the
+   internet, and a dashboard that needs a CDN is a dashboard that is down
+   exactly when the bench is cut off. */
+/* Dark by default: this runs on a bench, often in a dim lab, next to a
+   terminal. A bright page beside a black console is the thing people complain
+   about, so dark is the base and light is the opt-in. */
+:root {
+  --bg: #0e1117; --panel: #161b22; --line: #262d38; --ink: #e6eaf0;
+  --muted: #8b95a5; --accent: #5b8dff; --live: #2ecc8f; --dead: #3a424f;
+  --warn: #e0a33a; --danger: #f06a6a; --term-bg: #0a0d12; --term-ink: #d6dbe3;
+  --radius: 10px;
+}
+:root[data-theme="light"] {
+  --bg: #f7f8fa; --panel: #ffffff; --line: #e3e6ec; --ink: #14181f;
+  --muted: #666f7d; --accent: #2f6df6; --live: #17a673; --dead: #b9bfc9;
+  --warn: #d4820a; --danger: #d64545; --term-bg: #0f1319; --term-ink: #d6dbe3;
+}
+/* No `prefers-color-scheme: light` override here on purpose. Dark is THE
+   default, not "dark unless your OS says otherwise" -- honouring the OS put a
+   light-mode desktop straight back on the bright palette, which is exactly what
+   was asked to go away. Light is available, but only by explicitly setting
+   data-theme="light" on the root element. */
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 10;
+}
+h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+h1 span { color: var(--muted); font-weight: 400; }
+.spacer { flex: 1; }
+.pill {
+  font-size: 12px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+}
+.pill.ok { color: var(--live); border-color: color-mix(in srgb, var(--live) 40%, transparent); }
+.pill.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+
+main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+/* auto-fit, not auto-fill: with four consoles on a wide screen, auto-fill keeps
+   empty phantom tracks and the cards huddle at one end. auto-fit collapses the
+   empties so the row actually spans the page. The floor is lower too -- these
+   cards are a name, a line setting and two connection strings, and 330px of
+   width bought nothing but whitespace. */
+/* ONE COLUMN, always. Cards used to flow into as many columns as the window
+   was wide, which split a rack across the screen and put a board's consoles
+   side by side with another board's -- on a wide monitor the reading order
+   stopped matching the hardware. A bench is a stack: chassis under chassis,
+   console under console, top to bottom. */
+.grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+/* The RACK grid holds node sections, which butt up against each other; the 12px
+   gutter above is for the card grids nested inside a chassis. */
+#grid { gap: 0; }
+main { padding-top: 14px; }
+
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px 16px; cursor: pointer; transition: border-color .15s, transform .15s;
+}
+.card:hover { border-color: var(--accent); }
+.card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.card.gone { opacity: .55; }
+@keyframes flash { from { background: color-mix(in srgb, var(--accent) 22%, var(--panel)); } }
+.card.changed { animation: flash 1.1s ease-out; }
+
+.card-head { display: flex; align-items: center; gap: 8px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dead); flex: none; }
+.dot.live { background: var(--live); box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 22%, transparent); }
+.dot.gone { background: var(--danger); }
+.name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub { color: var(--muted); font-size: 12px; margin-top: 3px;
+       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tags { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 9px; }
+.tag { font-size: 11px; padding: 1px 7px; border-radius: 5px;
+       background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+
+.conn { margin-top: 11px; display: flex; flex-direction: column; gap: 5px; }
+.conn-row { display: flex; align-items: center; gap: 7px; }
+code {
+  font: 12px/1.5 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 3px 7px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+button {
+  font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { filter: brightness(1.08); color: #fff; }
+button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.copied { color: var(--live); border-color: var(--live); }
+
+/* ------------------------------------------------------------- console --- */
+.console { margin-top: 22px; background: var(--panel); border: 1px solid var(--line);
+           border-radius: var(--radius); overflow: hidden; }
+.console-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.console-title { font-weight: 600; }
+.term {
+  background: var(--term-bg); color: var(--term-ink); margin: 0; padding: 12px 14px;
+  font: 12.5px/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  height: 58vh; min-height: 260px; overflow: auto; white-space: pre-wrap;
+  word-break: break-word; overflow-wrap: anywhere;
+}
+.term:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.term .c30{color:#5c6370}.term .c31{color:#e06c75}.term .c32{color:#98c379}
+.term .c33{color:#e5c07b}.term .c34{color:#61afef}.term .c35{color:#c678dd}
+.term .c36{color:#56b6c2}.term .c37{color:#dcdfe4}.term .b{font-weight:700}
+.term .dim{opacity:.65}
+
+.composer { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); }
+.composer input {
+  flex: 1; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 7px 10px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink);
+}
+.composer input:disabled { opacity: .5; }
+.composer input:focus { outline: none; border-color: var(--accent); }
+
+/* ---------------------------------------------------------------- rack ---
+   One physical adapter is one chassis, and chassis stack in a rack. This is
+   not decoration: an operator looks at a bench and sees boards, each with its
+   own controller and its own ports. A flat grid of loose cards loses exactly
+   that, and the controller ends up floating beside the ports it drives with
+   nothing saying they belong together. */
+.rack {
+  position: relative;
+  padding: 10px 22px;
+  margin-bottom: 8px;
+}
+/* The rails. Two uprights with punched mounting holes, drawn with a repeating
+   gradient so they scale with however many chassis are mounted. */
+.rack::before, .rack::after {
+  content: "";
+  position: absolute; top: 0; bottom: 0; width: 14px;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0 7px,
+      color-mix(in srgb, var(--ink) 22%, transparent) 7px 11px,
+      transparent 11px 22px),
+    linear-gradient(to bottom,
+      color-mix(in srgb, var(--line) 90%, transparent),
+      color-mix(in srgb, var(--line) 60%, transparent));
+  border-radius: 3px;
+}
+.rack::before { left: 0; }
+.rack::after { right: 0; }
+
+/* A chassis: the unit that mounts in the rack. */
+.adapter {
+  grid-column: 1 / -1;
+  position: relative;
+  margin: 0 0 6px;
+  background:
+    linear-gradient(to bottom,
+      color-mix(in srgb, var(--panel) 96%, var(--ink)),
+      var(--panel) 14px);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 10px 14px 13px 30px;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--ink) 6%, transparent);
+}
+/* Ventilation slots down the left of the faceplate. */
+.adapter::before {
+  content: "";
+  position: absolute; left: 11px; top: 12px; bottom: 12px; width: 6px;
+  background: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ink) 14%, transparent) 0 3px,
+    transparent 3px 7px);
+  border-radius: 2px;
+}
+.adapter:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+
+/* §P1. A peer's rack: a labelled band under the local bench. Deliberately
+   quieter than a local chassis -- remote hardware is real but it is somebody
+   else's shelf, and the eye should land on the local rig first. */
+.rack-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 22px 0 8px; padding: 8px 12px; border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  border: 1px solid var(--line);
+}
+/* A node's faceplate. Deliberately reads as MANAGEMENT hardware rather than a
+   heading: a dark strip, a lamp, a monospace address and a build stamp -- the
+   things a BMC front panel actually shows. The local node wears the same plate
+   as its peers, because it is one. */
+.node-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 20px 0 8px; padding: 9px 14px; border-radius: 7px 7px 3px 3px;
+  background: linear-gradient(to bottom,
+    color-mix(in srgb, var(--ink) 12%, var(--panel)),
+    color-mix(in srgb, var(--ink) 5%, var(--panel)));
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+}
+.node-head.self { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+/* A GRID ITEM DOES NOT SHRINK BELOW ITS CONTENT UNLESS TOLD TO.
+   `min-width: auto` is the default, so one unbreakable token -- a build
+   fingerprint, a peer's by-id path -- widens the whole track and the page pans
+   sideways on a phone. Measured: a 390px body with a 420px node section. */
+#grid > .node-section, .node-section > .rack, .node-head { min-width: 0; }
+
+/* One host, one frame -- and the frames STACK, with nothing between them.
+   A rack is a continuous run of hardware: a strip of page showing through above
+   a nameplate reads as a gap in the rack, not as breathing room. The separation
+   between machines is the plate itself, which is what a divider is for. */
+.node-section { margin: 0; }
+/* The nameplate caps the frame: square where it meets the bay, and the uprights
+   below start flush against it. */
+.node-section > .node-head { margin: 0; border-radius: 7px 7px 0 0; border-bottom-width: 1px; }
+/* Equal air inside the bay, top and bottom, and none outside it. */
+.node-section > .rack { padding-top: 12px; padding-bottom: 12px; margin-bottom: 0; }
+/* Two plates back to back would double their borders into a thick seam. */
+.node-section + .node-section > .node-head { border-top: 0; }
+.node-lamp {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: var(--dead); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.node-lamp.live { background: var(--ok); box-shadow: 0 0 7px var(--ok); }
+.node-lamp.quiet { background: var(--warn); box-shadow: 0 0 7px var(--warn); }
+/* §P3. Reachable, but only in the other direction. A colour of its own rather
+   than green: the boards work, and an operator debugging connectivity still
+   needs to know this node cannot be dialled from here. */
+.node-lamp.relay { background: var(--accent); box-shadow: 0 0 7px var(--accent); }
+.node-lamp.gone { background: var(--dead); }
+.node-name { font-size: 13px; font-weight: 700; letter-spacing: .4px; color: var(--ink); }
+.node-addr {
+  font: 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+  padding: 1px 6px; border-radius: 3px;
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+.node-meta { font-size: 11.5px; color: var(--muted); }
+.node-build {
+  font: 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted); letter-spacing: .5px;
+  padding: 1px 6px; border-radius: 3px; margin-left: auto;
+  border: 1px solid var(--line);
+}
+/* Skew is the one thing here worth shouting about. */
+.node-build.skew {
+  color: var(--warn); border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.node-link { font-size: 11.5px; color: var(--accent); text-decoration: none; }
+.node-link:hover { text-decoration: underline; }
+/* A chassis with nothing live in it: still mounted, visibly powered down. */
+.adapter.dark { opacity: .55; }
+.adapter.dark:hover { opacity: 1; }
+.rack-name { font-size: 12.5px; font-weight: 700; letter-spacing: .3px; color: var(--ink); }
+.rack-sub { font-size: 11.5px; color: var(--muted); }
+.rack-link { font-size: 11.5px; color: var(--accent); margin-left: auto; text-decoration: none; }
+.rack-link:hover { text-decoration: underline; }
+.rack-pill {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+  padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line);
+}
+/* Three states because there are three situations, and treating the middle one
+   as "down" sends somebody to the wrong host: live = advertising and answering;
+   not answering = the host is there and its mcpd is not; stale = silence. */
+.rack-pill.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.rack-pill.quiet { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.rack-pill.gone { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+/* The chip on a remote card, so a device is never ambiguous about where it is. */
+.via-chip {
+  font-size: 10.5px; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 999px; padding: 1px 6px; margin-left: 6px; white-space: nowrap;
+}
+
+.adapter-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+/* Chassis status lamp: green when the board is talking, dim when it is not. */
+.adapter-led {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--dead);
+}
+.adapter-led.live {
+  background: var(--live);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--live) 70%, transparent);
+}
+/* Power indicator: the one thing a human wants to know at a glance -- is this
+   board actually ON? Deliberately distinct from .adapter-led, which reports
+   TRAFFIC: a powered board sitting idle at a prompt is silent, and conflating
+   "quiet" with "off" is exactly the confusion this removes.
+
+   Three states, and the third is not decoration: a controller that cannot
+   measure power (the Bughopper drives its CBUS pins as outputs, with no sense
+   line back from the board) must read UNKNOWN. Showing that as "off" would make
+   a running board look dead. */
+.pwr {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 7px 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .8px;
+  text-transform: uppercase; color: var(--muted);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  line-height: 1.6;
+}
+.pwr .bulb {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: transparent;
+  border: 1.5px solid color-mix(in srgb, var(--muted) 55%, transparent);
+}
+/* ON: a lit filament, with the soft bloom of a real panel lamp. */
+.pwr.on {
+  color: var(--live);
+  border-color: color-mix(in srgb, var(--live) 45%, var(--line));
+  background: color-mix(in srgb, var(--live) 9%, transparent);
+}
+.pwr.on .bulb {
+  background: var(--live);
+  border-color: var(--live);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--live) 80%, transparent),
+              0 0 2px color-mix(in srgb, var(--live) 90%, transparent) inset;
+}
+/* OFF: an empty socket. Recessed rather than coloured, so a dark rack of
+   powered-down boards stays calm instead of looking alarming. */
+.pwr.off { color: var(--muted); }
+.pwr.off .bulb {
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+  border-color: color-mix(in srgb, var(--ink) 30%, transparent);
+  box-shadow: 0 1px 1px color-mix(in srgb, var(--ink) 20%, transparent) inset;
+}
+/* UNKNOWN: hatched, so "we cannot tell" is visibly NOT "off". */
+.pwr.unknown .bulb {
+  background: repeating-linear-gradient(45deg,
+    color-mix(in srgb, var(--muted) 45%, transparent) 0 1.5px,
+    transparent 1.5px 3px);
+  border-style: dashed;
+}
+@media (prefers-reduced-motion: no-preference) {
+  /* One slow breath on power-up, then steady: enough to catch the eye when a
+     board comes up, not enough to nag. */
+  .pwr.on .bulb { animation: pwr-settle 1.4s ease-out 1; }
+  @keyframes pwr-settle {
+    0%   { box-shadow: 0 0 0 color-mix(in srgb, var(--live) 0%, transparent); }
+    35%  { box-shadow: 0 0 13px color-mix(in srgb, var(--live) 95%, transparent); }
+    100% { box-shadow: 0 0 7px color-mix(in srgb, var(--live) 80%, transparent); }
+  }
+}
+.adapter-name { font-size: 12px; font-weight: 700; color: var(--ink);
+                letter-spacing: .5px; text-transform: uppercase; }
+.adapter-sub { font-size: 11.5px; color: var(--muted); letter-spacing: .2px; }
+/* The controller is the chassis' own management module: seat it at the top,
+   full width, above the ports it drives. */
+.adapter .ctl { margin: 0 0 10px; background: var(--panel); }
+.adapter .card { background: var(--panel); }
+
+/* Connection strings in the console header: monospace, click to copy, and
+   allowed to wrap so a long telnet/nc line never widens the header. */
+/* conminer's own messages belong BESIDE the console, never inside it. Injected
+   into the stream they corrupt what the board actually said -- they survive in
+   scrollback, they end up in a copy-paste of a boot log, and under a
+   full-screen application they land in the middle of the grid. */
+.cnote {
+  font-size: 11.5px; color: var(--muted); opacity: 0;
+  transition: opacity .2s; white-space: nowrap;
+}
+.cnote.show { opacity: 1; }
+.cnote.warn { color: var(--warn); }
+
+.conns { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+button.connbtn {
+  font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted); background: var(--bg); padding: 3px 8px;
+}
+button.connbtn:hover { color: var(--accent); border-color: var(--accent); }
+button.connbtn.copied { color: var(--live); border-color: var(--live); }
+
+.power { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+         padding: 9px 14px; border-top: 1px solid var(--line); }
+.power-target {
+  font: 11.5px/1.4 ui-monospace, Menlo, Consolas, monospace;
+  color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px;
+  max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.power-label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+               letter-spacing: .4px; margin-right: 2px; }
+.power .sep { width: 1px; height: 18px; background: var(--line); margin: 0 5px; }
+button.act { min-width: 62px; }
+button.act.busy { opacity: .6; cursor: progress; }
+button.act.ok { color: var(--live); border-color: var(--live); }
+button.act.fail { color: var(--danger); border-color: var(--danger); }
+.power-msg { font-size: 12px; color: var(--muted); margin-left: 4px;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A board controller is not a console that failed to open; it is the thing that
+   turns the board on, so it gets a control panel rather than a dead row. */
+.ctl { grid-column: 1 / -1; margin-top: 2px; background: var(--panel); border: 1px solid var(--line);
+       border-left: 4px solid var(--accent); border-radius: var(--radius);
+       padding: 13px 16px; }
+.ctl-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.ctl-tag { font-size: 10.5px; font-weight: 700; letter-spacing: .5px; color: var(--accent);
+           border: 1px solid currentColor; border-radius: 999px; padding: 1px 8px; }
+.ctl-name { font-weight: 620; }
+.ctl-id { font: 11.5px/1.5 ui-monospace, Menlo, Consolas, monospace; color: var(--muted);
+          margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 11px; }
+.ctl-row .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase;
+                letter-spacing: .4px; margin-right: 2px; }
+.ctl-msg { font-size: 12px; color: var(--muted); margin-left: 2px; }
+/* A solo console window shows the console and nothing else. */
+main.solo .grid, main.solo #empty { display: none; }
+main.solo .console { margin-top: 0; }
+.empty { color: var(--muted); text-align: center; padding: 60px 20px; }
+.banner { padding: 9px 14px; font-size: 12.5px; display: flex; gap: 8px; align-items: center;
+          background: color-mix(in srgb, var(--warn) 13%, var(--panel));
+          border-bottom: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+.hidden { display: none !important; }
+kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line);
+      border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--muted); }
+.label.empty { opacity: .45; font-style: italic; }
+.label:hover { outline: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); cursor: text; }
+.label.saving { opacity: .5; }
+.label.fail, .tag.fail { outline: 1px solid var(--danger); }
+.label-edit, .tag-edit {
+  font: inherit; font-size: 11.5px; margin-left: .5em; padding: 1px 5px;
+  border-radius: 3px; border: 1px solid var(--accent);
+  background: var(--term-bg); color: var(--ink); min-width: 7em;
+}
+/* A chip carries its own remove control, so taking a label off is where putting
+   it on was -- not in a menu somewhere else. */
+.tag { display: inline-flex; align-items: center; gap: 3px; }
+.tag-x {
+  font: inherit; line-height: 1; padding: 0 1px; margin-left: 1px;
+  background: none; border: 0; color: var(--muted); cursor: pointer; opacity: 0;
+  transition: opacity .12s;
+}
+.tag:hover .tag-x { opacity: 1; }
+.tag-x:hover { color: var(--danger); }
+.tag.target .tag-x { display: none; }
+.tag-add {
+  font: inherit; font-size: 11px; padding: 0 .45em; border-radius: 3px;
+  background: none; color: var(--muted); cursor: pointer;
+  border: 1px dashed color-mix(in srgb, var(--line) 90%, transparent);
+}
+.tag-add:hover { color: var(--accent); border-color: var(--accent); }
+.label{display:inline-block;margin-left:.5em;padding:0 .4em;border-radius:3px;
+       background:var(--chip,#2a2f3a);color:var(--chipfg,#cfd6e4);font-size:.75em;
+       font-weight:500;vertical-align:middle}
+/* --------------------------------------------------------------- phone --- */
+/*
+   A bench dashboard gets read standing next to the rack, on a phone, with one
+   hand -- so the phone layout is not a courtesy, it is the common case. Three
+   things decide whether it works:
+
+   1. NOTHING SCROLLS SIDEWAYS. The page is a column; anything too wide (a
+      connection string, terminal output) scrolls inside its own box.
+   2. CONTROLS ARE THUMB-SIZED. These buttons cut power to real hardware; a
+      44px target is not decoration, it is the difference between OFF and
+      RESET when the bus is moving.
+   3. THE RACK STILL READS AS A RACK. Narrower rails and tighter chassis, but
+      the frame stays: it is what tells one board's consoles from another's.
+*/
+@media (max-width: 640px) {
+  header { padding: 10px 12px; gap: 8px; }
+  h1 { font-size: 14px; }
+  .pill { font-size: 11px; padding: 2px 7px; }
+  main { padding: 10px; }
+
+  /* Slimmer uprights, so the cards get the width instead of the frame. */
+  .rack { padding: 8px 13px; }
+  .rack::before, .rack::after { width: 7px; }
+  .node-head { padding: 8px 10px; gap: 7px; }
+  /* The identity keeps its space; the build stamp yields it. */
+  .node-build { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .node-addr { overflow-wrap: anywhere; }
+  .node-section > .rack { padding-top: 9px; padding-bottom: 9px; }
+  .adapter { padding: 9px 10px 11px 22px; }
+  /* One line, with the rest in the tooltip: a wrapped by-id path is three lines
+     of shouting above the hardware somebody came here to look at. */
+  /* Clip the NAME, do not stop the head wrapping: `nowrap` made the row as wide
+     as its longest child and the whole page panned. In a flex row an element
+     only clips if it is allowed to shrink below its content -- hence min-width:0
+     -- and the counts beside it keep their own line when there is no room. */
+  .adapter-name {
+    flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* A CONTROLLER'S IDENTITY IS ONE UNBREAKABLE TOKEN.
+     `Microchip Technology Inc. Bantam · KARUSSELLXXBANTAMTDC00002MZ4N-if00` has
+     no break opportunity a browser will take, so its min-content width becomes
+     the panel's, and the panel's becomes the page's: measured at 657px on the
+     live bench in a 390px viewport. It is a serial number people read off the
+     screen, so it wraps rather than truncates. */
+  /* NOTHING TAKES ITS MINIMUM WIDTH FROM AN UNBREAKABLE TOKEN.
+     Every identity on this page is a by-id path, a by-path address or a serial:
+     one long word with no break opportunity a browser will take on its own. Any
+     of them sets its container's min-content width, that container sets its
+     parent's, and the page ends up wider than the phone -- measured at 657px in
+     a 390px viewport, first from a controller's id, then from the card title of
+     a board that had gone away. Rather than chase them one at a time, the
+     containers are allowed to shrink and the text is allowed to break. */
+  .card, .card-head, .ctl, .ctl-head, .adapter, .adapter-head, .rack, .tags { min-width: 0; }
+  .name, .sub, .ctl-id, .tag, .node-addr, .conn-row code { overflow-wrap: anywhere; min-width: 0; }
+  .adapter::before { left: 8px; width: 5px; }
+  .card { padding: 11px 12px; }
+
+  /* Thumb-sized controls. `min-height` rather than padding alone: a button with
+     one short word ("On") is otherwise 24px tall and sits beside "Off". */
+  button { min-height: 40px; padding: 8px 12px; font-size: 13px; }
+  /* Two even columns instead of "On Off Cycle" and an orphaned "Reset": the
+     controls of one board should look like one block of controls.
+     `minmax(0, 1fr)`, not `1fr`: a bare `1fr` track cannot shrink below its
+     content, so one long mode name ("SS_MD_FASTBOOT") widens both columns and
+     with them the page. */
+  .ctl-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .ctl-row .lbl { grid-column: 1 / -1; }
+  .ctl-row button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* ...except the chips, which are text you edit, not hardware you actuate. */
+  .tag-add, .tag-x, .copy { min-height: 0; }
+  .tag-add { padding: 3px 9px; }
+  .tag { font-size: 12px; padding: 3px 9px; }
+  .label, .label.empty { font-size: 13px; }
+  .label-edit, .tag-edit { font-size: 16px; }  /* 16px stops iOS zooming in */
+
+  /* A connection string is long and monospaced: let it scroll in its own box
+     rather than push the page wide. */
+  .conn-row { gap: 6px; }
+  .conn-row code { overflow-x: auto; text-overflow: clip; }
+  .conn-row button { min-height: 34px; padding: 5px 10px; }
+
+  /* The terminal keeps its own scroll in both directions. */
+  .term { height: 52vh; min-height: 200px; padding: 10px; font-size: 12px; }
+  .console-head { padding: 9px 11px; gap: 7px; }
+  .console { margin-top: 14px; }
+}
+
+</style>
+</head>
+<body>
+
+<header>
+  <h1>conminer <span>consoles</span></h1>
+  <span class="pill" id="feed">connecting…</span>
+  <span class="pill" id="count">—</span>
+  <div class="spacer"></div>
+  <span class="pill" id="txmode">—</span>
+  <span class="pill" id="slots">—</span>
+</header>
+
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty">No consoles detected. Plug one in: this page updates on its own.</div>
+
+  <section class="console hidden" id="console">
+    <div class="banner" id="shared">
+      <strong>Shared line.</strong>
+      <span id="sharedtext"></span>
+    </div>
+    <div class="console-head">
+      <span class="console-title" id="ctitle">—</span>
+      <span class="pill" id="cline">—</span>
+      <span class="pill" id="cviewers">—</span>
+      <span class="pill hidden" id="cstatus">—</span>
+      <span class="cnote" id="cnote"></span>
+      <span class="conns" id="cconn"></span>
+      <div class="spacer"></div>
+      <button id="mode">Watching (read-only)</button>
+      <button id="follow">Following</button>
+      <button id="clear">Clear</button>
+      <button id="save">Save .log</button>
+      <button id="close" class="danger">Close</button>
+    </div>
+    <div class="term" id="term" tabindex="0"></div>
+    <div class="composer">
+      <!-- No controls here. Typing goes straight to the board with full xterm
+           key encoding, so a compose-then-send box and a Ctrl-C button are both
+           slower paths to bytes the keyboard already delivers. The hint appears
+           only while sending: in read-only mode it would invite a click that
+           does nothing. -->
+      <span class="hint hidden" id="typehint">Click the terminal and type.</span>
+    </div>
+    <div class="power hidden" id="power">
+      <span class="power-label">Power</span>
+      <span class="power-target" id="powertarget"></span>
+      <!-- Disabled until wirePower() binds this bar to a device. It is ONE bar
+           reused by whichever console is open, so before it is bound a click
+           would either do nothing or actuate the board bound last. -->
+      <button class="act" data-power="on" disabled>On</button>
+      <button class="act" data-power="off" disabled>Off</button>
+      <button class="act" data-power="cycle" disabled>Cycle</button>
+      <button class="act" data-power="reset" disabled>Reset</button>
+      <span class="sep" id="modesep"></span>
+      <span class="power-label" id="modelabel">Boot mode</span>
+      <span id="modes"></span>
+      <span class="power-msg" id="powermsg"></span>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { devices: [], peers: [], node: null, node_host: null, build: null,
+                selected: null, ws: null, send: false, follow: true, prev: new Map(),
+                // THE PAGE MUST NOT REBUILD ITSELF UNDER SOMEBODY'S HANDS.
+                // `render()` clears the whole grid, and it runs on every device
+                // event -- about once a second on a live bench. An open editor is
+                // inside that grid, so it was destroyed a keystroke after it
+                // opened, and the blur that followed SAVED the one character that
+                // had been typed. `editing` counts open editors; `hold` keeps the
+                // grid still for a moment around a click, because a rebuild
+                // between mousedown and mouseup swallows the click entirely --
+                // which is why the chips felt unclickable.
+                editing: 0, editSince: 0, hold: 0, pending: false,
+                // §CONSOLE SURVIVES ITS BOARD. A Bughopper's FTDI *is* the
+                // board's UART, so cutting power takes the tty with it: the
+                // device goes `gone`, ser2net drops the port, and the socket
+                // closes. That is a normal power cycle, not a reason to throw
+                // away the operator's screen -- which is what closing the pane
+                // did, blanking the page and never coming back.
+                waiting: false, retry: null, attempt: 0, cursor: null };
+
+/// Is the grid held still right now?
+///
+/// TWO SAFETY NETS, because the failure mode of getting this wrong is a
+/// dashboard that stops updating -- far worse than the typing bug it fixes:
+///  1. if the counter says an editor is open but none is in the DOM, it leaked;
+///     forget it.
+///  2. an editor left open forever (somebody wandered off mid-rename) stops
+///     holding the page after a minute. The edit is theirs to lose; a bench that
+///     shows stale power state is everybody's problem.
+function renderPaused() {
+  if (state.editing > 0) {
+    const open = document.querySelector(".label-edit, .tag-edit");
+    if (!open) state.editing = 0;
+    else if (Date.now() - state.editSince > 60000) return Date.now() < state.hold;
+  }
+  return state.editing > 0 || Date.now() < state.hold;
+}
+
+/// Keep the grid still for `ms`, then draw whatever was missed.
+function holdRender(ms) {
+  state.hold = Math.max(state.hold, Date.now() + ms);
+  setTimeout(() => { if (state.pending && !renderPaused()) render(); }, ms + 30);
+}
+
+/// One editor opened / closed. The last one out redraws what was held back, so
+/// the page is never left showing a stale snapshot.
+function editingStarted() { state.editing++; state.editSince = Date.now(); }
+function editingEnded() {
+  state.editing = Math.max(0, state.editing - 1);
+  if (state.pending && !renderPaused()) render();
+}
+
+/// Take a whole snapshot, not just its device list.
+///
+/// There are two paths that receive one -- the first fetch and the live event
+/// stream -- and each used to copy the fields it happened to care about. The
+/// fleet fields (who this node is, which build, which peers) were dropped by
+/// whichever path ran, so the local faceplate rendered with no name and no
+/// build stamp. One function, both callers, nothing forgotten twice.
+function ingest(s) {
+  state.devices = s.devices || [];
+  state.peers = s.peers || [];
+  state.node = s.node || state.node;
+  state.node_host = s.node_host || state.node_host;
+  state.build = s.build || state.build;
+}
+
+// ------------------------------------------------------------ device list ---
+
+function connStrings(d) {
+  const host = location.hostname || "127.0.0.1";
+  if (!d.port) return [];
+  return [
+    ["telnet", `telnet ${host} ${d.port}`],
+    ["nc", `nc ${host} ${d.port}`],
+  ];
+}
+
+function render() {
+  // Held: remember that a redraw is owed and get out. Blowing the grid away
+  // while a label is being typed is the whole bug this guard exists for.
+  if (renderPaused()) { state.pending = true; return; }
+  state.pending = false;
+  const grid = $("grid");
+  grid.innerHTML = "";
+  $("empty").classList.toggle("hidden", state.devices.some(d => !d.is_file));
+
+  // One physical adapter, one group. A quad-UART chip otherwise presents as
+  // four unrelated-looking rows, and on a bring-up rig they are one board.
+  // Mined log files are not bench hardware: they cannot be plugged in, powered
+  // or typed at, so they do not belong beside the consoles. Still reachable
+  // through the MCP surface, where they behave like any other device.
+  const physical = state.devices.filter(d => !d.is_file);
+  const fileCount = state.devices.length - physical.length;
+
+  // §P1. THE LOCAL RACK FIRST, then one section per peer.
+  //
+  // The hardware a person is standing next to is the hardware they act on
+  // fastest, so it stays where it has always been: at the top, ungrouped by any
+  // fleet framing. A peer's boards appear beneath, in a labelled rack that says
+  // which node and which host they are on -- a remote board that looks local is
+  // how somebody power-cycles the wrong lab.
+  const local = physical.filter(d => !d.node);
+  const remote = physical.filter(d => d.node);
+  // One set for the whole page: a controller is one controller wherever its
+  // rows land.
+  const panelled = new Set();
+  // THE LOCAL BENCH IS A NODE TOO. It used to be an unlabelled pile above the
+  // peers, which made the page read as "some hardware, then some other people's
+  // hardware" rather than as one rack of machines. Every node now wears the same
+  // faceplate: name, address, build, and a lamp.
+  const localRack = nodeRack(grid, nodeHeader({
+    node: state.node || "this node",
+    host: state.node_host,
+    build: state.build,
+    build_matches: true,
+    live: true,
+    answering: true,
+    age_s: 0,
+    self: true,
+  }, local.length));
+  renderRack(local, localRack, panelled);
+  const byNode = new Map();
+  for (const d of remote) {
+    if (!byNode.has(d.node)) byNode.set(d.node, []);
+    byNode.get(d.node).push(d);
+  }
+  const peers = (state.peers || []).slice().sort((a, b) => a.node.localeCompare(b.node));
+  for (const p of peers) {
+    const rows = byNode.get(p.node) || [];
+    // Its own rack even when empty: a node that owns no hardware is a fact
+    // about the fleet, and an empty rack says it better than a missing one.
+    const rack = nodeRack(grid, nodeHeader(p, rows.length));
+    if (rows.length) renderRack(rows, rack, panelled);
+    byNode.delete(p.node);
+  }
+  // A node we hold rows for but no longer have a peer entry for: still shown,
+  // still labelled, never silently dropped.
+  for (const [node, rows] of byNode) {
+    const rack = nodeRack(
+      grid,
+      nodeHeader({node, live: false, answering: false, age_s: null}, rows.length),
+    );
+    renderRack(rows, rack, panelled);
+  }
+  renderFileNote(fileCount, grid);
+  // A STABLE READINESS MARKER, not a phrase from the UI.
+  //
+  // The browser suite used to wait for the words "live /" in the count pill,
+  // which meant a copy change to that pill silently turned every browser gate
+  // into a screenshot of a half-built page. Tests wait on this instead; it says
+  // one thing and no one will reword it.
+  document.body.dataset.ready = "1";
+}
+
+/// One node's faceplate: who, where, which build, and whether it is answering.
+///
+/// Modelled on a BMC front panel because that is what it is -- the management
+/// face of a machine that has hardware behind it. The same strip serves the
+/// local bench and every peer, so the page reads as one rack of nodes rather
+/// than "our stuff, then their stuff".
+function nodeHeader(peer, count) {
+  const head = document.createElement("div");
+  head.className = "node-head" + (peer.self ? " self" : "");
+  head.dataset.node = peer.node;
+  // Four states, and they mean different things: green = advertising and
+  // answering; blue = we cannot dial it but it calls in, so its boards are fully
+  // driveable over the reverse channel (§P3); amber = advertising and its mcpd is
+  // not answering (a crashed service, not a missing host); red = we have not
+  // heard from it at all.
+  //
+  // The blue one exists because without it a perfectly working node reads as a
+  // broken one: node-b sits upstream of a NAT, cannot be dialled from here, and
+  // every board on it can still be powered from here.
+  const st = !peer.live ? "gone"
+    : peer.answering ? "live"
+    : peer.reverse ? "relay"
+    : "quiet";
+  // A lamp, not a word: the eye finds a colour across a rack faster than it
+  // reads four labels. The word stays in the tooltip, where it is exact.
+  const lamp = document.createElement("span");
+  lamp.className = "node-lamp " + st;
+  lamp.title = st === "live" ? "advertising and answering"
+    : st === "relay" ? "cannot be dialled from here; it calls in, so its boards are driveable"
+    : st === "quiet" ? "advertising but its mcpd is not answering"
+    : "not heard from recently";
+
+  const name = document.createElement("span");
+  name.className = "node-name";
+  name.textContent = peer.node;
+
+  const where = document.createElement("span");
+  where.className = "node-addr";
+  where.textContent = peer.host || "address unknown";
+
+  const meta = document.createElement("span");
+  meta.className = "node-meta";
+  const age = peer.age_s == null || peer.self ? "" : ` · ${peer.age_s}s ago`;
+  meta.textContent = `${count} device${count === 1 ? "" : "s"}${age}`;
+
+  head.append(lamp, name, where, meta);
+
+  // BUILD, and whether it matches ours. A fleet proxies calls between nodes, so
+  // a node on a different build is a behaviour difference waiting to be blamed
+  // on hardware. Shown always; flagged only when it disagrees.
+  if (peer.build) {
+    const b = document.createElement("span");
+    b.className = "node-build" + (peer.build_matches === false ? " skew" : "");
+    b.textContent = peer.build.slice(0, 12);
+    b.title = peer.build_matches === false
+      ? "this node runs a DIFFERENT build from this one"
+      : "build fingerprint";
+    head.appendChild(b);
+  }
+  if (peer.dash_url) {
+    const link = document.createElement("a");
+    link.className = "node-link";
+    link.href = peer.dash_url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = "open its dashboard";
+    head.appendChild(link);
+  }
+  return head;
+}
+
+function renderRack(physical, grid, panelled) {
+  const groups = new Map();
+  for (const d of physical) {
+    // Group by the CONTROL relationship first, adapter second.
+    //
+    // A controller is often a different USB device from the consoles it drives:
+    // the Bantam is its own CDC endpoint while the board's four UARTs live on an
+    // FT4232. Keyed by adapter they land in separate chassis, which is exactly
+    // backwards -- they are one board. `controller` names the profile driving a
+    // console, and a controller reports its own name, so both sides agree on a
+    // key and end up in the same server.
+    // Group by physical topology: devices sharing a downstream USB hub are one
+    // board's harness. `adapter` is that hub when the topology is known, and
+    // falls back to the by-id adapter prefix when it is not.
+    const key = d.adapter || d.canonical;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(d);
+  }
+
+  // CAPTURING means the port is open and somebody is reading it. It is capture
+  // health, which lives in `capture_state`; `state` is presence and is owned by
+  // discovery. They shared one column once and each writer erased the other, so
+  // reading aliveness out of `state` worked only for as long as the last writer
+  // happened to be minerd. `garbage` counts: bytes at the wrong baud still prove
+  // the port is open, and calling that "dead" sends someone hunting a cable.
+  const capturing = d => ["listening", "streaming", "garbage"].includes(d.capture_state);
+
+  // LIVE HARDWARE FIRST, departed hardware last. A chassis whose every port is
+  // gone is history, not equipment: it still belongs on the page -- a cable
+  // that fell out is exactly what somebody needs to see -- but it does not
+  // belong between two working boards.
+  const order = [...groups.entries()].sort((a, b) => {
+    const alive = g => g[1].some(capturing) ? 0 : 1;
+    return alive(a) - alive(b) || String(a[0]).localeCompare(String(b[0]));
+  });
+  groups.clear();
+  for (const [k, v] of order) groups.set(k, v);
+
+  for (const [key, devices] of groups) {
+    let host = grid;
+    // EVERY group mounts as a chassis, including a lone console with no
+    // controller at all. The exception used to be "one card and no controller",
+    // which is exactly what a bare CMSIS-DAP debug probe is -- so the one device
+    // on the bench that is just a serial port rendered as a loose card floating
+    // beside the rack. A port with no controller is a perfectly ordinary thing;
+    // it just has no power buttons.
+    const hasController = devices.some(x => x.is_controller);
+    {
+      const box = document.createElement("div");
+      const anyAlive = devices.some(capturing);
+      box.className = "adapter" + (anyAlive ? "" : " dark");
+      const head = document.createElement("div");
+      head.className = "adapter-head";
+      // Chassis status lamp: lit while any port on this board is talking.
+      const led = document.createElement("span");
+      const anyLive = devices.some(capturing);
+      led.className = "adapter-led" + (anyLive ? " live" : "");
+      const name = document.createElement("span");
+      name.className = "adapter-name";
+      name.textContent = prettyAdapter(key);
+      // Clipped to one line on a phone, so the full name has to live somewhere:
+      // a peer's chassis is named by its owner's by-id path, which is longer
+      // than any handset is wide.
+      name.title = prettyAdapter(key);
+      const sub = document.createElement("span");
+      sub.className = "adapter-sub";
+      // A console is a device with an ENDPOINT, not one that fails to be a
+      // controller. Counting `!is_controller` undercounts any controller that
+      // also carries a console -- a Bughopper's FTDI is the board's UART, so it
+      // showed "0 ports" while serving one. And a control-only device like a
+      // Bantam has no endpoint, so it drops out of the count naturally, with no
+      // special case for either kind.
+      const ports = devices.filter(x => x.port !== null && x.port !== undefined);
+      // "live" means the port is actually being served, not merely "not gone":
+      // a device with no endpoint assigned is not live in any useful sense.
+      const live = ports.filter(capturing).length;
+      const bits = [`${ports.length} port${ports.length === 1 ? "" : "s"} · ${live} live`];
+      if (hasController) bits.push("controller");
+      sub.textContent = bits.join(" · ");
+
+      // Power state comes from the board's controller, cached server-side. A
+      // device that cannot be measured reports nothing, and "nothing" renders as
+      // UNKNOWN rather than OFF.
+      const powered = devices.map(x => x.power).find(v => v === "on" || v === "off");
+      // NOT `&& !x.is_controller`: a Bughopper's FTDI is BOTH the board's
+      // console and its controller, so excluding controllers hid the power lamp
+      // on exactly the board whose controller is the device.
+      const anyHook = devices.some(x => x.has_power_hook);
+      let pwr = null;
+      if (anyHook) {
+        pwr = document.createElement("span");
+        const st = powered || "unknown";
+        pwr.className = "pwr " + st;
+        const bulb = document.createElement("span");
+        bulb.className = "bulb";
+        const lbl = document.createElement("span");
+        lbl.textContent = st === "on" ? "powered" : st === "off" ? "off" : "power n/a";
+        // "n/a" not "?": for the Bughopper this is a permanent property of the
+        // controller, not a transient failure to read. Its CBUS pins are outputs
+        // driving the power button with no sense line back from the board, so
+        // there is nothing to measure -- unlike a Bantam, which exposes the
+        // SoC's own MD_PS_HOLD. Saying "unknown" invites someone to go looking
+        // for a fault that does not exist.
+        pwr.title = st === "unknown"
+          ? "this controller drives power but cannot sense it, so there is no state to report"
+          : "board is powered " + st;
+        pwr.append(bulb, lbl);
+      }
+      head.append(led, name, sub);
+      if (pwr) head.append(pwr);
+      const inner = document.createElement("div");
+      inner.className = "grid";
+      box.append(head, inner);
+      rackOf(grid).appendChild(box);
+      host = inner;
+    }
+    renderCards(devices, host, panelled);
+  }
+}
+
+/// The count line, and a note for anything mined that is not bench hardware.
+///
+/// Remote devices count as LIVE here: they are hardware somebody can act on
+/// from this page, which is the whole point of showing them.
+function renderFileNote(fileCount, grid) {
+  // EVERYTHING ON THIS PAGE IS ON THE BUS. The server drops hardware that is no
+  // longer connected, so a "N known" total would now be the same number with a
+  // vaguer name -- and when it was NOT the same number it was worse than
+  // useless: it advertised 26 devices on a rig with one cable in it and invited
+  // the question of where the other 21 were.
+  //
+  // A row can still be here while `present` is false, briefly: a board mid
+  // power-cycle, or one in EDL. Those are connected, so they count.
+  const remote = state.devices.filter(d => d.node).length;
+  const local = state.devices.length - remote;
+  const suffix = remote ? ` · ${remote} remote` : "";
+  $("count").textContent = `${local} connected${suffix}`;
+  void fileCount;
+  void grid;
+}
+
+/// POST a change and refresh, or say what went wrong on the element itself.
+async function saveMeta(el, url, body, what) {
+  el.classList.add("saving");
+  try {
+    const r = await fetch(url, {method: "POST", body});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) {
+      el.classList.add("fail");
+      el.title = `${what} failed: ${j.error || j.result?.error?.message || r.status}`;
+    } else {
+      await refresh();
+    }
+  } catch (e) {
+    el.classList.add("fail");
+    el.title = `${what} failed: ${e}`;
+  } finally {
+    el.classList.remove("saving");
+  }
+}
+
+/// The device's label: click to edit, Enter to keep, Escape to abandon.
+///
+/// An empty value clears it -- the way to take a label off is the same control
+/// that put it on, which is the one place people look for it.
+function labelChip(sel, nickname) {
+  const chip = document.createElement("span");
+  chip.className = nickname ? "label" : "label empty";
+  chip.textContent = nickname || "+ name";
+  chip.title = nickname
+    ? `label for ${sel} — click to edit`
+    : `name ${sel}`;
+  // ON MOUSEDOWN, NOT CLICK. A `click` needs the element to survive from press
+  // to release, and this grid rebuilds itself on every device event -- so the
+  // chip was often gone before the mouse came up and the click never landed.
+  chip.onmousedown = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const input = document.createElement("input");
+    input.className = "label-edit";
+    input.value = nickname || "";
+    input.placeholder = "label";
+    input.size = Math.max(8, input.value.length + 2);
+    chip.replaceWith(input);
+    editingStarted();
+    input.focus();
+    input.select();
+    let done = false;
+    const commit = (save) => {
+      if (done) return;
+      done = true;
+      const value = input.value.trim();
+      input.replaceWith(chip);
+      editingEnded();
+      if (save && value !== (nickname || "")) {
+        saveMeta(chip, `/api/label/${encodeURIComponent(sel)}`, value, "label");
+      }
+    };
+    input.onkeydown = (ev) => {
+      if (ev.key === "Enter") commit(true);
+      if (ev.key === "Escape") commit(false);
+      ev.stopPropagation();
+    };
+    // A FIELD THAT WAS TAKEN AWAY DID NOT LOSE FOCUS, IT DIED. Saving on that
+    // blur is what turned one typed character into a label.
+    input.onblur = () => commit(input.isConnected);
+    input.onclick = (ev) => ev.stopPropagation();
+  };
+  return chip;
+}
+
+/// Labels as chips: each removable, with one control to add another.
+///
+/// A tag with no value is a bare label ("needs-rma"); `key=value` is a selector
+/// (`tag:rack=r2`). Both are the same thing to the store, so both are typed into
+/// the same box and told apart by whether it contains an `=`.
+const DERIVED_TAGS = new Set(["usb_ports"]);
+
+function tagStrip(sel, tags, target) {
+  const strip = document.createElement("div");
+  strip.className = "tags";
+  if (target) {
+    const t = document.createElement("span");
+    t.className = "tag target";
+    t.textContent = "target:" + target;
+    t.title = "derived from USB topology, not an operator label";
+    strip.appendChild(t);
+  }
+  for (const [k, v] of Object.entries(tags || {})) {
+    const t = document.createElement("span");
+    // DERIVED FACTS ARE NOT OPERATOR LABELS. `usb_ports` is written by discovery
+    // from the hub topology and rewritten whenever the device is seen, so
+    // offering a delete button on it promises something the page cannot keep --
+    // and it put a chip nobody typed on every card on the bench.
+    const derived = DERIVED_TAGS.has(k);
+    t.className = derived ? "tag target" : "tag";
+    t.textContent = v ? `${k}=${v}` : k;
+    if (derived) {
+      t.title = "derived from USB topology, not an operator label";
+      strip.appendChild(t);
+      continue;
+    }
+    const x = document.createElement("button");
+    x.className = "tag-x";
+    x.textContent = "×";
+    x.title = `remove ${k}`;
+    x.onmousedown = (e) => e.stopPropagation();
+    x.onclick = (e) => {
+      e.stopPropagation();
+      saveMeta(t, `/api/tags/${encodeURIComponent(sel)}`,
+        JSON.stringify({remove: [k]}), "remove label");
+    };
+    t.appendChild(x);
+    strip.appendChild(t);
+  }
+  const add = document.createElement("button");
+  add.className = "tag-add";
+  add.textContent = "+ label";
+  add.title = "add a label, or key=value to make it a selector";
+  add.onmousedown = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const input = document.createElement("input");
+    input.className = "tag-edit";
+    input.placeholder = "label or key=value";
+    add.replaceWith(input);
+    editingStarted();
+    input.focus();
+    let done = false;
+    const commit = (save) => {
+      if (done) return;
+      done = true;
+      const raw = input.value.trim();
+      input.replaceWith(add);
+      editingEnded();
+      if (!save || !raw) return;
+      const eq = raw.indexOf("=");
+      const key = (eq < 0 ? raw : raw.slice(0, eq)).trim();
+      const value = eq < 0 ? "" : raw.slice(eq + 1).trim();
+      if (!key) return;
+      saveMeta(add, `/api/tags/${encodeURIComponent(sel)}`,
+        JSON.stringify({tags: {[key]: value}}), "add label");
+    };
+    input.onkeydown = (ev) => {
+      if (ev.key === "Enter") commit(true);
+      if (ev.key === "Escape") commit(false);
+      ev.stopPropagation();
+    };
+    input.onblur = () => commit(input.isConnected);
+    input.onclick = (ev) => ev.stopPropagation();
+  };
+  strip.appendChild(add);
+  return strip;
+}
+
+function controllerCard(d) {
+  const box = document.createElement("div");
+  box.className = "ctl";
+
+  const head = document.createElement("div");
+  head.className = "ctl-head";
+  const tag = document.createElement("span");
+  tag.className = "ctl-tag";
+  tag.textContent = "CONTROLLER";
+  const name = document.createElement("span");
+  name.className = "ctl-name";
+  name.textContent = d.controller || "board controller";
+  head.append(tag, name);
+  // A CONTROLLER IS LABELLABLE TOO. It is the thing an operator points at when
+  // they say "power the one on the left", and it is addressable by that label
+  // over MCP -- so the panel that shows it is where it gets named.
+  //
+  // THE SUBJECT IS THE CONTROLLER'S OWN ROW. This panel is drawn from a
+  // representative CONSOLE of the board, so binding the chip to `d` would put
+  // two editors on one console's name -- one of them under a heading that says
+  // CONTROLLER. A peer's board gets no chip at all: its controller row lives on
+  // the owning node and is never imported here, so there is nothing local to
+  // name (naming it would silently create a label nothing resolves).
+  if (d.controller_port && !d.node) {
+    head.appendChild(labelChip(d.controller_port, d.controller_label));
+  }
+  box.appendChild(head);
+
+  const id = document.createElement("div");
+  id.className = "ctl-id";
+  // Derived from the by-id name rather than probed here. dashd deliberately
+  // runs no hooks: hardware actuation goes through mcpd so there is one path to
+  // the board, and this controller is single-session — a second process opening
+  // its tty to ask its name is exactly the thing that corrupts it.
+  // The owner's controller when this is a peer's board -- the console's own
+  // name would label the panel after the wrong device entirely.
+  id.textContent = prettyAdapter((d.controller_port || d.canonical).split("/").pop());
+  box.appendChild(id);
+  if (d.controller_port && !d.node) {
+    box.appendChild(tagStrip(d.controller_port, d.controller_tags, null));
+  }
+
+  const msg = document.createElement("span");
+  msg.className = "ctl-msg";
+
+  const bar = (label, items, mk) => {
+    if (!items.length) return;
+    const row = document.createElement("div");
+    row.className = "ctl-row";
+    const l = document.createElement("span");
+    l.className = "lbl";
+    l.textContent = label;
+    row.appendChild(l);
+    for (const it of items) row.appendChild(mk(it));
+    box.appendChild(row);
+    return row;
+  };
+
+  const mkBtn = (text, url, what, power) => {
+    const b = document.createElement("button");
+    b.className = "act";
+    b.textContent = text;
+    // A phone clips the label to fit two columns, and a boot mode you cannot
+    // read in full is one you can pick by mistake. The whole name stays here.
+    b.title = text;
+    // These buttons are bound per-board at creation, which is correct -- but
+    // they carried no identity, so nothing could verify WHICH board a click
+    // would actuate. With two controllers on a bench that has to be checkable.
+    if (power) { b.dataset.power = power; b.dataset.device = d.device; }
+    b.onclick = (e) => {
+      e.stopPropagation();
+      actOn(b, url, what, msg, box);
+    };
+    return b;
+  };
+
+  if (d.has_power_hook) {
+    bar("Power", ["on", "off", "cycle", "reset"], a =>
+      mkBtn(a[0].toUpperCase() + a.slice(1),
+            `/api/power/${encodeURIComponent(d.device)}/${a}`, `power ${a}`, a));
+  }
+  const modes = d.boot_modes || [];
+  if (modes.length) {
+    // "clear" alongside the modes, ALWAYS.
+    //
+    // On a strap-latching controller (Bantam) selecting a mode only ARMS it: the
+    // strap stays set, so every later boot lands in that mode until something
+    // clears it. The page offered no way to do that. A person could put a board
+    // into EDL from here and then had to find a terminal to get it out -- and
+    // the board looked broken in the meantime, booting to EDL again after every
+    // reset. `clear` is accepted by every controller, so it belongs next to the
+    // buttons that create the condition it undoes.
+    bar("Boot mode", [...modes, "clear"], m =>
+      mkBtn(m === "clear" ? "Clear" : m,
+            `/api/boot_mode/${encodeURIComponent(d.device)}/${encodeURIComponent(m)}`, m,
+            `mode:${m}`));
+  }
+  const last = document.createElement("div");
+  last.className = "ctl-row";
+  last.appendChild(msg);
+  box.appendChild(last);
+  return box;
+}
+
+/// `usb-FTDI_IQ10_UART-SPI_AR40BYP4AU` -> `FTDI IQ10 UART-SPI · AR40BYP4AU`
+function prettyAdapter(key) {
+  let s = key.replace(/^usb-/, "");
+  const parts = s.split("_");
+  const serial = parts.length > 1 ? parts.pop() : null;
+  s = parts.join(" ").replace(/_/g, " ");
+  return serial ? `${s} · ${serial}` : s;
+}
+
+/// The rack every chassis mounts into. Created lazily so a bench with no
+/// grouped devices does not draw empty rails.
+/// The rack a chassis mounts into.
+///
+/// ONE RACK PER NODE. This used to reuse the FIRST `.rack` on the page, so every
+/// node's chassis was appended into the local node's rack and each peer's
+/// faceplate ended up stranded at the bottom of the page with nothing beneath
+/// it. The faceplate is a divider -- the thing on the checkout belt that says
+/// where your shopping ends and the next person's begins -- and a divider that
+/// trails its own section is worse than none.
+function rackOf(host) {
+  if (host.classList && host.classList.contains("rack")) return host;
+  let rack = host.querySelector(":scope > .rack");
+  if (!rack) {
+    rack = document.createElement("div");
+    rack.className = "rack";
+    host.appendChild(rack);
+  }
+  return rack;
+}
+
+/// A node's own rack, capped by its nameplate.
+///
+/// The plate sits across the top of the frame and the uprights start beneath it,
+/// so each host reads as one piece of furniture: a labelled rack holding exactly
+/// that machine's hardware, with the next host's frame clearly a separate one.
+function nodeRack(grid, head) {
+  const section = document.createElement("div");
+  section.className = "node-section";
+  section.appendChild(head);
+  // The uprights belong to the BAY, which starts below the plate: a rack's
+  // nameplate caps the frame, it is not a unit bolted between the rails.
+  const bay = document.createElement("div");
+  bay.className = "rack";
+  section.appendChild(bay);
+  grid.appendChild(section);
+  return bay;
+}
+
+function renderCards(devices, grid, panelled) {
+  // Controllers first, always. The controller powers the board and picks its
+  // boot mode, so it is the control you reach for before any console; left in
+  // device order it ended up buried under the ports it drives.
+  devices = [...devices].sort((a, b) => (b.is_controller === true) - (a.is_controller === true));
+  // ONE PANEL PER CONTROLLER, not per row and NOT PER CHASSIS. A controller
+  // that carries several consoles is still one controller: a TAC is a single
+  // FT4232H whose channels are two UARTs and two GPIO ports, so every one of its
+  // rows is `is_controller` and all of them resolve to the SAME controller
+  // instance. Rendered per row that put two identical CONTROLLER panels on the
+  // page for one chip, each with its own power buttons -- inviting a second
+  // press on what looks like a second board.
+  //
+  // The set is threaded in from `render()` because this function runs ONCE PER
+  // CHASSIS GROUP, and a chip's rows do not all land in the same group: rows
+  // left without a `by_path` (ftdi_sio rebinding churn leaves `…-if02` beside
+  // `…-if02-port0`) have no topology, so they group under the by-id prefix
+  // instead of the hub port. A set scoped here deduped within each group and
+  // still drew one panel per group -- measured on the node-b bench, two panels for
+  // one FT4232H.
+  //
+  // `controller_port` is the resolved instance and is shared by every console
+  // the same controller drives, which is exactly the key wanted here.
+  // A PEER'S CONTROLLER IS NOT ON THIS BENCH, so nothing here is
+  // `is_controller` and the board gets no panel -- no power buttons, no boot
+  // modes, from any node but its owner.
+  //
+  // The controller row is deliberately never re-exported: it has no endpoint,
+  // and shipping it would claim to serve a console nobody serves. So the panel
+  // has to hang off the board's own console, which already carries the owner's
+  // answer for `has_power_hook`, `boot_modes` and `controller`. Keyed on the
+  // owner's controller INSTANCE so a board with four consoles still gets one
+  // panel. Measured from node-c: node-a's IQ10 was fully driveable over MCP
+  // and the dashboard API, and had not a single button on the page -- while the
+  // Bughopper beside it did, because its controller IS its console and so came
+  // across as a row.
+  if (!devices.some(d => d.is_controller)) {
+    const rep = devices.find(d => d.node && (d.has_power_hook || (d.boot_modes || []).length));
+    if (rep) {
+      const instance = rep.controller_port || rep.canonical;
+      if (!panelled.has(instance)) {
+        panelled.add(instance);
+        grid.appendChild(controllerCard(rep));
+      }
+    }
+  }
+  for (const d of devices) {
+    // The controller replaces its own "ignored" row with a control panel.
+    //
+    // ...but a controller can ALSO be a console. A Bantam is control-only and
+    // is excluded from discovery, so a panel is the whole story. A Bughopper's
+    // FTDI *is* the board's UART: it gets a panel AND a port card, or its
+    // console silently does not exist on the page. Fall through when it has an
+    // endpoint rather than `continue`.
+    if (d.is_controller) {
+      // NO PANEL FOR A CONTROLLER THAT IS NOT PLUGGED IN. The panel is a set of
+      // buttons that actuate hardware; drawing it for an absent Bantam offers
+      // an action that cannot happen, and it is what made a rig with one cable
+      // in it look like a full rack. The row itself stays below, marked.
+      const instance = d.controller_port || d.canonical;
+      if (d.present && !panelled.has(instance)) {
+        panelled.add(instance);
+        grid.appendChild(controllerCard(d));
+      }
+      if (!d.port) continue;
+    }
+    const card = document.createElement("div");
+    // `present` is the cable; `ignored` and `port` are about whether conminer
+    // serves a console for it. Asking the server for presence instead of
+    // matching `state === "gone"` here means one definition, in Rust, for a
+    // question four places on this page ask.
+    const live = d.present && !d.ignored && d.port !== null;
+    card.className = "card" + (live ? "" : " gone") +
+                     (state.selected === d.device ? " selected" : "");
+
+    // Flash only what actually changed, so a replug is visible at a glance and
+    // a steady lab is calm.
+    // Presence is in the signature so unplugging and replugging FLASHES the
+    // card. It is the single most interesting thing that can happen to a row.
+    const sig = JSON.stringify([d.state, d.present, d.port, d.ignored, d.line]);
+    if (state.prev.has(d.device) && state.prev.get(d.device) !== sig) {
+      card.classList.add("changed");
+    }
+    state.prev.set(d.device, sig);
+
+    const obs = d.observed && typeof d.observed === "object" ? d.observed : {};
+    const identity = obs.version || obs.banner || obs.board || obs.kernel || "";
+
+    const head = document.createElement("div");
+    head.className = "card-head";
+    head.innerHTML =
+      `<span class="dot ${live ? "live" : (d.present ? "" : "gone")}"></span>` +
+      `<span class="name"></span>` +
+      `<span class="spacer"></span>` +
+      (d.viewers ? `<span class="pill">${d.viewers} watching</span>` : "");
+    // Inside a group the shared adapter prefix is noise; the interface is what
+    // tells the four ports apart.
+    const iface = (d.canonical.match(/-if(\d+)/) || [])[1];
+    // THE PORT NAMES THE CARD. A nickname is a label an operator chose, and it
+    // used to replace the port entirely -- so "adp-ventuno" told you nothing
+    // about which of four interfaces you were about to power off. The label
+    // rides alongside instead.
+    head.querySelector(".name").textContent =
+      (iface !== undefined && d.adapter ? `port ${iface}` : d.device);
+    // The label is the operator's, so it is editable where it is READ. A
+    // separate edit screen for one short string is a screen nobody opens, and
+    // the label then stays wrong -- which is worse than having none, because a
+    // wrong name on a bench gets acted on.
+    head.querySelector(".name").after(labelChip(d.device, d.nickname));
+    card.appendChild(head);
+
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    // IN WORDS, NOT ONLY IN COLOUR. A dimmed card and a grey dot are the same
+    // to anyone who does not already know the convention, and this row may be
+    // hardware that came out of the rack days ago.
+    sub.textContent = [d.line, d.present ? (d.capture_state || d.state) : "not connected", identity]
+      .filter(Boolean).join(" · ");
+    card.appendChild(sub);
+
+    card.appendChild(tagStrip(d.device, d.tags, d.target));
+
+    const conn = document.createElement("div");
+    conn.className = "conn";
+    for (const [label, str] of connStrings(d)) {
+      const row = document.createElement("div");
+      row.className = "conn-row";
+      const code = document.createElement("code");
+      code.textContent = str;
+      code.title = label;
+      const btn = document.createElement("button");
+      btn.textContent = "Copy";
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(str).then(() => {
+          btn.textContent = "Copied"; btn.classList.add("copied");
+          setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1200);
+        });
+      };
+      row.append(code, btn);
+      conn.appendChild(row);
+    }
+    if (!d.port) {
+      const row = document.createElement("div");
+      row.className = "sub";
+      row.textContent = d.ignored ? "excluded by config" : "no ser2net endpoint assigned";
+      conn.appendChild(row);
+    }
+    card.appendChild(conn);
+
+    // Own window, so watching a console does not push the bench view off screen.
+    //
+    // Gated on `d.port`, NOT on liveness. A console that only opens once the
+    // board is already talking is useless for the main workflow on this bench:
+    // open the console first, then power on and watch it boot. Gating on `live`
+    // left a powered-off board with no click handler at all, so clicking did
+    // nothing and the card looked broken.
+    if (d.port) card.onclick = () => {
+      // A blocked popup returns null (or throws). Fall back to the inline pane
+      // rather than swallowing the click: a console that silently does nothing
+      // is worse than one that opens in the wrong place.
+      let w = null;
+      try {
+        w = window.open(`/?console=${encodeURIComponent(d.device)}`,
+                        `conminer-${d.device}`, "width=1100,height=760");
+      } catch (e) { w = null; }
+      if (!w) openConsole(d);
+    };
+    grid.appendChild(card);
+  }
+}
+
+// -------------------------------------------------------------- live feed ---
+
+function feed() {
+  // `?nostream=1` skips the live feed.
+  //
+  // Purely for testability, and it buys something real: the events stream never
+  // closes, so a headless browser waiting for the page load never finishes and
+  // cannot be used to check that this page actually BUILDS ITSELF. A JS error
+  // here leaves an empty shell that every server-side test still passes -- and
+  // that shipped once, when a `function open(d)` shadowed `window.open` and sent
+  // every console to /ws/console/undefined.
+  //
+  // The initial render comes from the /api/devices fetch, not from this stream,
+  // so a page opened this way is complete; it simply does not update.
+  if (new URLSearchParams(location.search).has("nostream")) return;
+  const es = new EventSource("/api/events");
+  es.addEventListener("devices", (ev) => {
+    const snap = JSON.parse(ev.data);
+    ingest(snap);
+    $("txmode").textContent = snap.allow_tx ? "TX enabled" : "read-only server";
+    $("txmode").className = "pill " + (snap.allow_tx ? "warn" : "ok");
+    $("slots").textContent = `ser2net: ${snap.max_connections} clients/port`;
+    $("feed").textContent = "live"; $("feed").className = "pill ok";
+    render();
+    if (solo && !state.opened) {
+      const d = state.devices.find(x => x.device === solo || x.canonical === solo);
+      if (d) { state.opened = true; openConsole(d); }
+    }
+    // A CONSOLE THAT VANISHED KEEPS ITS PANE.
+    //
+    // On a Bughopper the FTDI *is* the board's UART, so `power off` takes the
+    // tty with it: the row goes `gone`, ser2net drops the port and the socket
+    // closes. Closing the pane on that threw away the scrollback an operator was
+    // reading, blanked the page, and never came back when the board did --
+    // reported from the bench. A board that is off is a state to show, not a
+    // window to destroy.
+    const live = state.devices.some(
+      d => d.device === state.selected && d.present && d.port !== null);
+    if (state.selected && !live) {
+      consoleWaiting("the board's console went away (power off, EDL, or a replug); waiting for it");
+    } else if (state.selected && live && state.waiting) {
+      // It is back. Do not wait out the backoff: the operator is watching.
+      reconnectNow();
+    }
+  });
+  es.onerror = () => { $("feed").textContent = "reconnecting…"; $("feed").className = "pill bad"; };
+}
+
+// ------------------------------------------------- a very small terminal ----
+// Enough of a terminal to read a boot log honestly: SGR colours, and \r column
+// resets so a U-Boot progress line overwrites itself instead of stacking up.
+
+// ------------------------------------------------------------- vt screen ---
+// A full-screen application (vim, menuconfig, top) switches the terminal to the
+// ALTERNATE SCREEN and then addresses a fixed grid by row and column. That is a
+// different model from scrollback: there is no "append a line", only "put this
+// character at 12,40". Emulating it in the scrollback model is what made vim
+// unusable -- cursor moves became stray text and the display never converged.
+//
+// So: a real grid, engaged on CSI ?1049h and released on CSI ?1049l. Scrollback
+// is untouched and returns intact when the application exits, which is what an
+// operator expects after :q.
+const screen = {
+  rows: 24, cols: 80, cur: { r: 0, c: 0 }, cls: "", active: false,
+  top: 0, bot: 23, saved: null, grid: [],
+
+  blank() { return { t: " ", c: "" }; },
+  row() { return Array.from({ length: this.cols }, () => this.blank()); },
+  enter(rows, cols) {
+    this.rows = rows; this.cols = cols;
+    this.top = 0; this.bot = rows - 1;
+    this.grid = Array.from({ length: rows }, () => this.row());
+    this.cur = { r: 0, c: 0 };
+    this.active = true;
+  },
+  leave() { this.active = false; },
+
+  put(ch) {
+    if (this.cur.c >= this.cols) { this.cur.c = 0; this.down(); }
+    const r = this.grid[this.cur.r];
+    if (r) r[this.cur.c] = { t: ch, c: this.cls };
+    this.cur.c++;
+  },
+  down() {
+    if (this.cur.r === this.bot) this.scroll(1);
+    else this.cur.r = Math.min(this.rows - 1, this.cur.r + 1);
+  },
+  scroll(n) {
+    for (let i = 0; i < n; i++) {
+      this.grid.splice(this.top, 1);
+      this.grid.splice(this.bot, 0, this.row());
+    }
+  },
+  scrollDown(n) {
+    for (let i = 0; i < n; i++) {
+      this.grid.splice(this.bot, 1);
+      this.grid.splice(this.top, 0, this.row());
+    }
+  },
+  eraseDisplay(mode) {
+    if (mode === 2 || mode === 3) {
+      this.grid = Array.from({ length: this.rows }, () => this.row());
+      return;
+    }
+    // 0 = cursor to end, 1 = start to cursor.
+    const from = mode === 1 ? 0 : this.cur.r;
+    const to = mode === 1 ? this.cur.r : this.rows - 1;
+    for (let r = from; r <= to; r++) {
+      if (r === this.cur.r) this.eraseLine(mode);
+      else this.grid[r] = this.row();
+    }
+  },
+  eraseLine(mode) {
+    const r = this.grid[this.cur.r];
+    if (!r) return;
+    const from = mode === 1 ? 0 : this.cur.c;
+    const to = mode === 1 ? this.cur.c : this.cols - 1;
+    for (let c = from; c <= to; c++) r[c] = this.blank();
+  },
+
+  render() {
+    const out = [];
+    for (const row of this.grid) {
+      let line = "", cls = row[0] ? row[0].c : "";
+      const parts = [];
+      for (const cell of row) {
+        if (cell.c !== cls) { parts.push({ t: line, c: cls }); line = ""; cls = cell.c; }
+        line += cell.t;
+      }
+      parts.push({ t: line.replace(/\s+$/, ""), c: cls });
+      out.push(parts);
+    }
+    return out;
+  },
+};
+
+const term = {
+  lines: [[]], col: 0, cls: "", cap: 4000, dec: new TextDecoder("utf-8", { fatal: false }),
+  raw: [],
+
+  reset() {
+    this.lines = [[]]; this.col = 0; this.cls = ""; this.raw = [];
+    screen.leave();
+    $("term").innerHTML = "";
+  },
+
+  write(bytes) {
+    this.raw.push(bytes);
+    const text = this.dec.decode(bytes, { stream: true });
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === "\x1b") {
+        const m = /^\x1b\[([0-9;?]*)([A-Za-z])/.exec(text.slice(i));
+        if (m) {
+          if (this.csi(m[1], m[2])) { i += m[0].length; continue; }
+          if (m[2] === "m") this.sgr(m[1]);
+          else if (m[2] === "K") this.truncate();
+          i += m[0].length; continue;
+        }
+        // OSC and anything else unrecognised: drop the escape, keep the text.
+        const osc = /^\x1b\][^\x07\x1b]*(\x07|\x1b\\)/.exec(text.slice(i));
+        i += osc ? osc[0].length : 1;
+        continue;
+      }
+      if (screen.active) {
+        if (ch === "\n") { screen.down(); i++; continue; }
+        if (ch === "\r") { screen.cur.c = 0; i++; continue; }
+        if (ch === "\b") { screen.cur.c = Math.max(0, screen.cur.c - 1); i++; continue; }
+        if (ch < " ") { i++; continue; }
+        screen.cls = this.cls;
+        screen.put(ch);
+        i++;
+        continue;
+      }
+      if (ch === "\n") { this.newline(); i++; continue; }
+      if (ch === "\r") { this.col = 0; i++; continue; }
+      if (ch === "\b") { this.col = Math.max(0, this.col - 1); i++; continue; }
+      if (ch === "\t") { this.put("        ".slice(0, 8 - (this.col % 8))); i++; continue; }
+      if (ch < " " && ch !== "\x1b") { i++; continue; }
+      let j = i;
+      while (j < text.length && text[j] >= " " && text[j] !== "\x1b") j++;
+      this.put(text.slice(i, j));
+      i = j;
+    }
+    this.paint();
+  },
+
+  /// Handle a CSI sequence. Returns true when it was consumed here.
+  ///
+  /// Only the sequences a full-screen application actually needs: mode switch,
+  /// cursor addressing, erase, and scroll regions. Anything else falls through
+  /// to the scrollback path, which already handles SGR and EL.
+  csi(params, final) {
+    const p = (params || "").replace("?", "");
+    const nums = p.split(";").map(x => parseInt(x || "0", 10));
+    const n = (i, d) => (Number.isFinite(nums[i]) && nums[i] > 0 ? nums[i] : d);
+
+    // Alternate screen: the boundary between "a log" and "an application".
+    if (params === "?1049" || params === "?47" || params === "?1047") {
+      if (final === "h") {
+        const el = $("term");
+        const cw = 8.05, chh = 18.1; // measured for the 12.5px mono stack
+        const cols = Math.max(20, Math.floor(el.clientWidth / cw) - 1);
+        const rows = Math.max(6, Math.floor(el.clientHeight / chh));
+        screen.enter(rows, cols);
+      } else if (final === "l") {
+        screen.leave();
+      }
+      this.paint();
+      return true;
+    }
+    if (params.startsWith("?")) return true; // other private modes: cursor vis etc.
+    if (!screen.active) return false;
+
+    switch (final) {
+      case "H": case "f":
+        screen.cur.r = Math.min(screen.rows - 1, n(0, 1) - 1);
+        screen.cur.c = Math.min(screen.cols - 1, n(1, 1) - 1);
+        return true;
+      case "A": screen.cur.r = Math.max(0, screen.cur.r - n(0, 1)); return true;
+      case "B": screen.cur.r = Math.min(screen.rows - 1, screen.cur.r + n(0, 1)); return true;
+      case "C": screen.cur.c = Math.min(screen.cols - 1, screen.cur.c + n(0, 1)); return true;
+      case "D": screen.cur.c = Math.max(0, screen.cur.c - n(0, 1)); return true;
+      case "G": screen.cur.c = Math.min(screen.cols - 1, n(0, 1) - 1); return true;
+      case "d": screen.cur.r = Math.min(screen.rows - 1, n(0, 1) - 1); return true;
+      case "J": screen.eraseDisplay(nums[0] || 0); return true;
+      case "K": screen.eraseLine(nums[0] || 0); return true;
+      case "L": screen.scrollDown(n(0, 1)); return true;
+      case "M": screen.scroll(n(0, 1)); return true;
+      case "S": screen.scroll(n(0, 1)); return true;
+      case "T": screen.scrollDown(n(0, 1)); return true;
+      case "r":
+        screen.top = Math.max(0, n(0, 1) - 1);
+        screen.bot = Math.min(screen.rows - 1, n(1, screen.rows) - 1);
+        return true;
+      case "m": this.sgr(params); return true;
+      default: return false;
+    }
+  },
+
+  cur() { return this.lines[this.lines.length - 1]; },
+
+  put(s) {
+    const line = this.cur();
+    let plain = line.map(x => x.t).join("");
+    if (this.col < plain.length) {
+      // Overwrite: rebuild the line as flat text, then re-tag the tail. Losing
+      // the earlier colours of an overwritten line is a fair trade for showing
+      // the same thing the board actually left on screen.
+      plain = plain.slice(0, this.col) + s + plain.slice(this.col + s.length);
+      line.length = 0;
+      line.push({ t: plain.slice(0, this.col), c: "" }, { t: s, c: this.cls },
+                { t: plain.slice(this.col + s.length), c: "" });
+    } else {
+      if (this.col > plain.length) line.push({ t: " ".repeat(this.col - plain.length), c: "" });
+      line.push({ t: s, c: this.cls });
+    }
+    this.col += s.length;
+  },
+
+  truncate() {
+    const line = this.cur();
+    const plain = line.map(x => x.t).join("").slice(0, this.col);
+    line.length = 0;
+    if (plain) line.push({ t: plain, c: "" });
+  },
+
+  newline() {
+    this.lines.push([]); this.col = 0;
+    if (this.lines.length > this.cap) this.lines.splice(0, this.lines.length - this.cap);
+  },
+
+  sgr(params) {
+    for (const p of (params || "0").split(";")) {
+      const n = parseInt(p || "0", 10);
+      if (n === 0) this.cls = "";
+      else if (n === 1) this.cls = (this.cls + " b").trim();
+      else if (n === 2) this.cls = (this.cls + " dim").trim();
+      else if (n >= 30 && n <= 37) this.cls = "c" + n;
+      else if (n >= 90 && n <= 97) this.cls = "c" + (n - 60);
+    }
+  },
+
+  paint() {
+    const el = $("term");
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    const frag = document.createDocumentFragment();
+    // While a full-screen application owns the terminal, paint ITS grid. The
+    // scrollback is kept untouched underneath and returns intact on :q.
+    const source = screen.active ? screen.render() : this.lines;
+    for (const line of source) {
+      const div = document.createElement("div");
+      for (const span of line) {
+        if (!span.t) continue;
+        if (span.c) {
+          const s = document.createElement("span");
+          s.className = span.c; s.textContent = span.t; div.appendChild(s);
+        } else {
+          div.appendChild(document.createTextNode(span.t));
+        }
+      }
+      if (!line.length) div.appendChild(document.createTextNode("​"));
+      frag.appendChild(div);
+    }
+    el.innerHTML = "";
+    el.appendChild(frag);
+    // An application addresses a fixed grid: there is nothing to follow, and
+    // auto-scrolling fights the cursor.
+    if (!screen.active && state.follow && atBottom !== false) {
+      el.scrollTop = el.scrollHeight;
+    }
+  },
+};
+
+// ---------------------------------------------------------------- console ---
+
+// NOT named `open`: a top-level `function open()` becomes `window.open`,
+// shadowing the browser's popup API. The card handler then called this
+// function with the URL *string*, which has no `.device`, so the socket URL
+// became /ws/console/undefined and the console rendered inline instead of in
+// its own window. Renaming is the whole fix.
+function openConsole(d) {
+  if (state.ws) { state.ws.onclose = null; state.ws.close(); }
+  // KEEP THE SCREEN when this is the same console coming back. Resetting on
+  // every open is right for a different device and wrong for a resume: the
+  // whole point of surviving a power cycle is that what you were reading is
+  // still there when the board returns.
+  const resuming = state.selected === d.device;
+  state.selected = d.device;
+  state.send = false;
+  if (!resuming) term.reset();
+  $("console").classList.remove("hidden");
+  $("ctitle").textContent = d.device;
+  {
+    const t = $("ctitle");
+    const old = t.parentNode.querySelector(".label");
+    if (old) old.remove();
+    if (d.nickname) {
+      const tag = document.createElement("span");
+      tag.className = "label";
+      tag.textContent = d.nickname;
+      t.after(tag);
+    }
+  }
+  $("cline").textContent = d.line;
+  // A console window should tell you how to reach the same port from a
+  // terminal: this window is one way in, not the only one.
+  const conn = $("cconn");
+  if (conn) {
+    conn.innerHTML = "";
+    for (const [label, str] of connStrings(d)) {
+      const b = document.createElement("button");
+      b.className = "connbtn";
+      b.title = `${label} — click to copy`;
+      b.textContent = str;
+      b.onclick = () => {
+        navigator.clipboard.writeText(str).then(() => {
+          const prev = b.textContent;
+          b.textContent = "copied"; b.classList.add("copied");
+          setTimeout(() => { b.textContent = prev; b.classList.remove("copied"); }, 1100);
+        });
+      };
+      conn.appendChild(b);
+    }
+  }
+  // TX is re-armed per connection. `disabled` was only ever set, never
+  // cleared, so one read-only device left the control dead for the life of the
+  // window -- which reads as "TX is broken" rather than "that port was
+  // read-only".
+  $("mode").disabled = false;
+  setSend(false);
+  wirePower(d);
+  render();
+  $("console").scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  connectConsole();
+}
+
+/// Open the socket for whatever console is selected, and keep it open.
+///
+/// Separated from `openConsole` so a reconnection touches ONLY the socket: the
+/// terminal buffer, the header and the power bar all belong to the console, not
+/// to this particular TCP connection.
+function connectConsole() {
+  if (!state.selected) return;
+  if (state.retry) { clearTimeout(state.retry); state.retry = null; }
+  const device = state.selected;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  // Ask for what was captured since we last saw anything. Only on a RESUME:
+  // a first open wants the attachment's scrollback, not a replay of history.
+  const since = state.waiting && state.cursor
+    ? `?since=${encodeURIComponent(state.cursor)}` : "";
+  const ws = new WebSocket(
+    `${proto}//${location.host}/ws/console/${encodeURIComponent(device)}${since}`);
+  ws.binaryType = "arraybuffer";
+  state.ws = ws;
+  ws.onopen = () => {
+    if (state.waiting) {
+      // Say WHERE the seam is. Boot output resuming mid-screen with no marker
+      // reads as corruption, and an operator cannot tell what they missed.
+      term.write(new TextEncoder().encode(
+        `\r\n\u001b[36m── console back at ${new Date().toLocaleTimeString()} ──\u001b[0m\r\n`));
+    }
+    consoleLive();
+  };
+
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "hello") {
+        if (msg.cursor) state.cursor = msg.cursor;
+        $("cviewers").textContent = msg.viewers === 1 ? "you are the only viewer" : `${msg.viewers} viewers`;
+        sharedNotice(msg.viewers);
+        if (!msg.allow_tx) { $("mode").disabled = true; $("mode").textContent = "TX disabled by config"; }
+      } else if (msg.type === "cursor") {
+        // The anchor for a future reconnect, sent after the greeting so the
+        // console is live before conminer touches its store.
+        if (msg.cursor) state.cursor = msg.cursor;
+      } else if (msg.type === "replay") {
+        if (msg.cursor) state.cursor = msg.cursor;
+        // SAY WHAT WAS MISSED AND HOW MUCH. Silently splicing captured output
+        // into the screen would leave an operator unable to tell live from
+        // history -- the whole point of the marker is that the seam is visible.
+        const what = msg.lines === 0
+          ? "nothing was captured while you were away"
+          : `${msg.lines} line${msg.lines === 1 ? "" : "s"} captured while you were away` +
+            (msg.truncated ? " (older lines trimmed)" : "");
+        term.write(new TextEncoder().encode(
+          `\r\n\u001b[36m── ${what} ──\u001b[0m\r\n`));
+      } else if (msg.type === "error") {
+        note(msg.message);
+      }
+      return;
+    }
+    term.write(new Uint8Array(ev.data));
+  };
+  // A CLOSE IS NOT AN ENDING. ser2net drops every client when the tty goes, and
+  // it goes on every power cycle of a board whose controller is its UART. So the
+  // page waits and dials again, for as long as the console stays selected.
+  ws.onclose = () => {
+    if (state.ws !== ws) return;          // superseded by a newer socket
+    state.ws = null;
+    if (!state.selected) return;          // the operator closed it: respect that
+    consoleWaiting("connection closed; waiting for the console to come back");
+    scheduleReconnect();
+  };
+}
+
+/// The console is selected but has no socket: say so, stop offering TX, and
+/// keep everything the operator was looking at.
+function consoleWaiting(why) {
+  state.waiting = true;
+  setSend(false);
+  const pill = $("cstatus");
+  if (pill) {
+    pill.textContent = "waiting for the console";
+    pill.className = "pill warn";
+    pill.title = why;
+  }
+  note(why, true);
+}
+
+function consoleLive() {
+  state.waiting = false;
+  state.attempt = 0;
+  const pill = $("cstatus");
+  if (pill) { pill.className = "pill hidden"; }
+  note("");
+}
+
+/// Dial again, backing off a little, but never giving up while it is selected.
+///
+/// A board can be off for a second (reset) or for an afternoon (somebody went
+/// home); the page has to behave the same in both cases, so the interval is
+/// capped rather than exponential without bound.
+function scheduleReconnect() {
+  if (state.retry || !state.selected) return;
+  state.attempt = Math.min(state.attempt + 1, 5);
+  const wait = [400, 800, 1200, 2000, 3000][state.attempt - 1] || 3000;
+  state.retry = setTimeout(() => { state.retry = null; connectConsole(); }, wait);
+}
+
+/// The device is back in the snapshot: dial now rather than waiting out a
+/// backoff the operator can see is over.
+function reconnectNow() {
+  if (!state.selected || state.ws) return;
+  if (state.retry) { clearTimeout(state.retry); state.retry = null; }
+  state.attempt = 0;
+  connectConsole();
+}
+
+function sharedNotice(viewers) {
+  // Nothing here locks the line. Saying so is the honest alternative to
+  // pretending the console is exclusively yours.
+  $("sharedtext").textContent =
+    `minerd is capturing this port, and nothing locks it: other viewers and any agent can transmit at the same time as you.` +
+    (viewers > 1 ? ` ${viewers} browsers are attached right now.` : "");
+}
+
+function closeConsole(why) {
+  if (state.ws) { state.ws.onclose = null; state.ws.close(); state.ws = null; }
+  if (why) note(why);
+  state.selected = null; setSend(false);
+  $("power").classList.add("hidden");
+  $("console").classList.add("hidden");
+  render();
+}
+
+function setSend(on) {
+  state.send = on && !$("mode").disabled;
+  $("mode").textContent = state.send ? "Sending (keystrokes go to the board)" : "Watching (read-only)";
+  $("mode").className = state.send ? "primary" : "";
+  $("typehint").classList.toggle("hidden", !state.send);
+  $("term").style.cursor = state.send ? "text" : "default";
+  if (state.send) $("term").focus();
+}
+
+
+function tx(bytes) {
+  if (!state.send || !state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  state.ws.send(bytes);
+}
+
+// ---- hardware controls ---------------------------------------------------
+// Every button goes to dashd, which forwards to mcpd, so a press is the same
+// actuation an agent performs: the epoch opens and the event lands on the
+// timeline. The button reports what actually happened rather than assuming.
+async function actOn(btn, url, what, msgEl, scope) {
+  const all = scope.querySelectorAll(".act");
+  all.forEach(b => { b.disabled = true; });
+  btn.classList.add("busy");
+  msgEl.textContent = `${what}…`;
+  try {
+    const r = await fetch(url, { method: "POST" });
+    const body = await r.json().catch(() => ({}));
+    const ok = r.ok && body.ok !== false;
+    btn.classList.add(ok ? "ok" : "fail");
+    msgEl.textContent = ok
+      ? `${what}: epoch ${body.result?.boot_id ?? "opened"}`
+      : `${what} failed: ${body.error || body.result?.error?.message || r.status}`;
+  } catch (e) {
+    btn.classList.add("fail");
+    msgEl.textContent = `${what} failed: ${e}`;
+  } finally {
+    setTimeout(() => {
+      btn.classList.remove("busy", "ok", "fail");
+      all.forEach(b => { b.disabled = false; });
+    }, 1600);
+  }
+}
+
+async function act(btn, url, what) {
+  const sel = "#power .act";
+  document.querySelectorAll(sel).forEach(b => { b.disabled = true; });
+  btn.classList.add("busy");
+  $("powermsg").textContent = `${what}…`;
+  // A power hook can block: the controller's readback is unreliable, and mcpd
+  // enforces its own timeout server-side. Without a client deadline the panel
+  // just sits greyed out forever and looks broken, so always give the UI a way
+  // back even when the request never settles.
+  const ctl = new AbortController();
+  const deadline = setTimeout(() => ctl.abort(), 45000);
+  try {
+    const r = await fetch(url, { method: "POST", signal: ctl.signal });
+    const body = await r.json().catch(() => ({}));
+    const ok = r.ok && body.ok !== false;
+    btn.classList.add(ok ? "ok" : "fail");
+    $("powermsg").textContent = ok
+      ? `${what}: epoch ${body.result?.boot_id ?? "opened"}`
+      : `${what} failed: ${body.error || body.result?.error?.message || r.status}`;
+  } catch (e) {
+    btn.classList.add("fail");
+    $("powermsg").textContent = e.name === "AbortError"
+      ? `${what}: no answer after 45s — check the controller`
+      : `${what} failed: ${e}`;
+  } finally {
+    clearTimeout(deadline);
+    setTimeout(() => {
+      btn.classList.remove("busy", "ok", "fail");
+      // Re-query: a live device update can rebuild the panel mid-flight, and
+      // re-enabling a detached node list leaves the visible buttons dead.
+      document.querySelectorAll(sel).forEach(b => { b.disabled = false; });
+    }, 1600);
+  }
+}
+
+function wirePower(d) {
+  const bar = $("power");
+  const has = d.has_power_hook || (d.boot_modes || []).length > 0;
+  bar.classList.toggle("hidden", !has);
+  if (!has) return;
+
+  // Say WHICH board these buttons drive, and record it in the DOM.
+  //
+  // There is one power bar, and wirePower rebinds it to whichever console was
+  // opened last. With two controllers on a bench that is a real hazard: the
+  // panel looked identical whichever board it was about to actuate, and the
+  // binding lived in invisible state. Now the target is named to the operator
+  // and readable by a test, so "did the click hit the right board?" has an
+  // answer instead of a hope.
+  bar.dataset.device = d.device;
+  // Bound now, so it is safe to use. Before this runs the bar has no device and
+  // must not be clickable -- see the guard where it is hidden.
+  for (const b of bar.querySelectorAll("[data-power]")) b.disabled = false;
+  const target = $("powertarget");
+  // The port, always: this line names the board you are about to actuate.
+  if (target) {
+    target.textContent = d.device.split("/").pop()
+      + (d.nickname ? ` (${d.nickname})` : "");
+  }
+
+  for (const b of bar.querySelectorAll("[data-power]")) {
+    b.dataset.device = d.device;
+    b.style.display = d.has_power_hook ? "" : "none";
+    b.onclick = () => act(b, `/api/power/${encodeURIComponent(d.device)}/${b.dataset.power}`,
+                          `power ${b.dataset.power}`);
+  }
+  const modes = $("modes");
+  modes.innerHTML = "";
+  const list = d.boot_modes || [];
+  $("modesep").style.display = list.length && d.has_power_hook ? "" : "none";
+  $("modelabel").style.display = list.length ? "" : "none";
+  for (const m of list) {
+    const b = document.createElement("button");
+    b.className = "act";
+    b.textContent = m;
+    b.title = `Bring the board up in ${m}`;
+    b.onclick = () => act(b, `/api/boot_mode/${encodeURIComponent(d.device)}/${encodeURIComponent(m)}`,
+                          m);
+    modes.appendChild(b);
+  }
+}
+
+$("mode").onclick = () => setSend(!state.send);
+$("follow").onclick = () => {
+  state.follow = !state.follow;
+  $("follow").textContent = state.follow ? "Following" : "Paused";
+  $("follow").className = state.follow ? "" : "primary";
+  if (state.follow) $("term").scrollTop = $("term").scrollHeight;
+};
+$("clear").onclick = () => term.reset();
+$("close").onclick = () => closeConsole(null);
+$("save").onclick = () => {
+  const blob = new Blob(term.raw, { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${state.selected || "console"}.log`;
+  a.click(); URL.revokeObjectURL(a.href);
+};
+/// Show a conminer message beside the console rather than writing it into the
+/// stream. Fades after a few seconds so a transient reconnect does not leave a
+/// permanent mark on a human's screen.
+let noteTimer = null;
+function note(msg, warn) {
+  const el = $("cnote");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "cnote show" + (warn ? " warn" : "");
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => { el.className = "cnote"; }, 6000);
+}
+
+
+// Direct typing into the terminal, so muscle memory from minicom works.
+$("term").addEventListener("keydown", (e) => {
+  if (!state.send) return;
+  if (e.metaKey || e.altKey) return;
+  if (e.ctrlKey) {
+    const k = e.key.toLowerCase();
+    if (k >= "a" && k <= "z") {
+      e.preventDefault();
+      tx(new Uint8Array([k.charCodeAt(0) - 96]));
+    }
+    return;
+  }
+  // Full xterm key encoding. Anything missing here is a key the board simply
+  // never receives: Home/End/Delete are what break line editing, and the
+  // function keys are what break menuconfig and vim's help. Tab is already
+  // here, which is why completion works -- but it MUST keep preventDefault or
+  // the browser steals it for focus navigation.
+  const map = {
+    Enter: [0x0d], Backspace: [0x7f], Tab: [0x09], Escape: [0x1b],
+    ArrowUp: [0x1b, 0x5b, 0x41], ArrowDown: [0x1b, 0x5b, 0x42],
+    ArrowRight: [0x1b, 0x5b, 0x43], ArrowLeft: [0x1b, 0x5b, 0x44],
+    Home: [0x1b, 0x5b, 0x48], End: [0x1b, 0x5b, 0x46],
+    Insert: [0x1b, 0x5b, 0x32, 0x7e], Delete: [0x1b, 0x5b, 0x33, 0x7e],
+    PageUp: [0x1b, 0x5b, 0x35, 0x7e], PageDown: [0x1b, 0x5b, 0x36, 0x7e],
+    // SS3 for F1-F4, CSI for the rest, as xterm sends them.
+    F1: [0x1b, 0x4f, 0x50], F2: [0x1b, 0x4f, 0x51],
+    F3: [0x1b, 0x4f, 0x52], F4: [0x1b, 0x4f, 0x53],
+    F5: [0x1b, 0x5b, 0x31, 0x35, 0x7e], F6: [0x1b, 0x5b, 0x31, 0x37, 0x7e],
+    F7: [0x1b, 0x5b, 0x31, 0x38, 0x7e], F8: [0x1b, 0x5b, 0x31, 0x39, 0x7e],
+    F9: [0x1b, 0x5b, 0x32, 0x30, 0x7e], F10: [0x1b, 0x5b, 0x32, 0x31, 0x7e],
+    F11: [0x1b, 0x5b, 0x32, 0x33, 0x7e], F12: [0x1b, 0x5b, 0x32, 0x34, 0x7e],
+  };
+  // Shift-Tab is its own sequence, and is how you go backwards in a TUI.
+  if (e.key === "Tab" && e.shiftKey) {
+    e.preventDefault();
+    tx(new Uint8Array([0x1b, 0x5b, 0x5a]));
+    return;
+  }
+  if (map[e.key]) { e.preventDefault(); tx(new Uint8Array(map[e.key])); return; }
+  if (e.key.length === 1) { e.preventDefault(); tx(new TextEncoder().encode(e.key)); }
+});
+
+// A window opened with ?console=<device> is a single console, not the bench.
+const solo = new URLSearchParams(location.search).get("console");
+if (solo) {
+  document.querySelector("main").classList.add("solo");
+  document.title = `${solo.split("/").pop()} · conminer`;
+}
+
+// ANY press in the rack freezes the redraw for a moment.
+//
+// Not only the label chips: every control on a card is inside the grid that
+// `render()` empties, so a device event landing between mousedown and mouseup
+// takes the button out from under the pointer and the click is never delivered.
+// Capture phase, so it runs before the control's own handler.
+$("grid").addEventListener("mousedown", () => holdRender(600), true);
+
+feed();
+fetch("/api/devices").then(r => r.json()).then(s => {
+  ingest(s);
+  $("txmode").textContent = s.allow_tx ? "TX enabled" : "read-only server";
+  $("txmode").className = "pill " + (s.allow_tx ? "warn" : "ok");
+  $("slots").textContent = `ser2net: ${s.max_connections} clients/port`;
+  render();
+});
+</script>
+</body>
+</html>

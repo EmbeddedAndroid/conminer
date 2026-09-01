@@ -4,6 +4,7 @@ members = [
     "crates/conminer-core",
     "crates/conminer-testkit",
     "crates/conminer-mcp",
+    "crates/conminer",
 ]
 
 [workspace.package]
