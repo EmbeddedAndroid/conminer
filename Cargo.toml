@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/conminer-core",
+    "crates/conminer-testkit",
+    "crates/conminer-mcp",
 ]
 
 [workspace.package]
