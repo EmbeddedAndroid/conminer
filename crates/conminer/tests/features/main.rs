@@ -4697,3 +4697,104 @@ fn a_console_mid_actuation_says_so_and_refuses_commands() {
     let after = rig.call("console_state", json!({"device": AP}));
     assert_ne!(after["console"]["state"], "actuating", "{after}");
 }
+
+/// A row this node holds on a peer's behalf, exactly as peering creates it:
+/// the canonical id carries the owner, which is what makes it remote.
+fn peer_console(rig: &Rig, node: &str, remote_path: &str) -> String {
+    let canonical = format!("peer:{node}/{remote_path}");
+    let mut reg = rig.registry();
+    let d = reg
+        .upsert_device(&canonical, None, IdentityKind::ById, None, 0)
+        .unwrap();
+    reg.set_remote_route(d.id, node, Some("127.0.0.1"), remote_path, None, None, 1)
+        .unwrap();
+    canonical
+}
+
+/// §P1. One peer-owned console must not take the whole bench-wide search down.
+///
+/// `all_devices` includes the rows this node holds for its peers, and
+/// `resolve_device_set` handed them straight to the local store path. There is
+/// no store here for a board another node mines, so `with_store` refused with
+/// INTERNAL "owned by node ... there is no local store to read", and the fan-out
+/// died on the first one instead of answering from the stores it does have.
+/// search_raw({devices:"all"}) failed on the first `peer:<node>/...` row while
+/// every local console sat there unread.
+#[test]
+fn a_peer_owned_console_does_not_break_a_bench_wide_search() {
+    let rig = Rig::new();
+    rig.ingest_text("[    1.0] shared marker line\n");
+    peer_console(
+        &rig,
+        "beta",
+        "/dev/serial/by-id/usb-Arduino_Bughopper_SN000001-if00",
+    );
+
+    let r = rig.call(
+        "search",
+        json!({"devices": "all", "query": "shared marker line", "include_derived": true}),
+    );
+    assert!(
+        !r["hits"].as_array().expect("hits").is_empty(),
+        "the local stores must still answer: {r}"
+    );
+}
+
+/// And the half that makes the answer honest.
+///
+/// Quietly dropping the peer's boards would turn "has this appeared anywhere on
+/// the bench" into "anywhere on this node", and an empty result then reads as
+/// "it never happened". That is a false negative in the one tool whose job is to
+/// find the occurrence, so what was NOT looked at is part of the answer.
+#[test]
+fn a_partial_bench_search_says_which_boards_it_could_not_read() {
+    let rig = Rig::new();
+    rig.ingest_text("[    1.0] shared marker line\n");
+    let peer = peer_console(
+        &rig,
+        "beta",
+        "/dev/serial/by-id/usb-Arduino_Bughopper_SN000001-if00",
+    );
+
+    let r = rig.call(
+        "search",
+        json!({"devices": "all", "query": "shared marker line", "include_derived": true}),
+    );
+    let skipped = r["not_searched"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a partial search must name what it skipped: {r}"));
+    assert_eq!(skipped.len(), 1, "{r}");
+    assert_eq!(skipped[0]["node"], "beta", "and say whose it is: {r}");
+    assert!(
+        peer.contains(skipped[0]["device"].as_str().unwrap_or("\0")),
+        "named by the console it could not read: {r}"
+    );
+    assert!(
+        r["partial_because"].as_str().is_some_and(|w| !w.is_empty()),
+        "and say so in words the caller reads: {r}"
+    );
+}
+
+/// An all-remote selector is an error, not an empty result.
+///
+/// "No hits" and "I never looked" are different answers, and only one of them
+/// means the line is not there.
+#[test]
+fn a_selector_matching_only_peer_boards_refuses_rather_than_answering_none() {
+    let rig = Rig::new();
+    peer_console(
+        &rig,
+        "beta",
+        "/dev/serial/by-id/usb-Arduino_Bughopper_SN000001-if00",
+    );
+
+    let e = rig.err(
+        "search",
+        json!({"devices": "all", "query": "anything at all", "include_derived": true}),
+    );
+    assert_eq!(e["code"], "UNKNOWN_DEVICE", "{e}");
+    assert!(
+        e["hint"].as_str().unwrap_or_default().contains("beta/"),
+        "the hint must name the federating form: {e}"
+    );
+}

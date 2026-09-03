@@ -1800,7 +1800,7 @@ pub fn registry() -> &'static [Tool] {
                     // The response anchors on the first store either way, but a
                     // cross-device search must not fail merely because no single
                     // `device` was named.
-                    Some(list) => list[0].clone(),
+                    Some(set) => set.local[0].clone(),
                     None => device(ctx, a)?,
                 };
                 let mode = match opt_s(a, "mode") {
@@ -1837,8 +1837,9 @@ pub fn registry() -> &'static [Tool] {
                     max_results: max,
                     after_offset: after,
                 };
-                if let Some(list) = &across {
-                    let payload = search_across(ctx, list, &q, max, opt_s(a, "cursor"))?;
+                if let Some(set) = &across {
+                    let payload =
+                        search_across(ctx, &set.local, &set.remote, &q, max, opt_s(a, "cursor"))?;
                     return fresh(ctx, &d, payload);
                 }
                 let (r, next) = ctx.with_store(&d, |st| {
@@ -7311,7 +7312,7 @@ fn add_power(row: &mut Value, map: &PowerMap, canonical: &str) {
 /// and `file:` pseudo-devices are not boards, and a question like "has this
 /// error appeared anywhere?" means anywhere on the BENCH. `include_derived`
 /// opts them back in for the caller who really does mean every store.
-fn resolve_device_set(ctx: &Context, a: &Map<String, Value>) -> Result<Option<Vec<DeviceRow>>> {
+fn resolve_device_set(ctx: &Context, a: &Map<String, Value>) -> Result<Option<DeviceSet>> {
     let Some(spec) = a.get("devices") else {
         return Ok(None);
     };
@@ -7368,7 +7369,56 @@ fn resolve_device_set(ctx: &Context, a: &Map<String, Value>) -> Result<Option<Ve
     // Deterministic order, so a paginated search resumes where it left off.
     out.sort_by(|a, b| a.canonical.cmp(&b.canonical));
     out.dedup_by(|a, b| a.id == b.id);
-    Ok(Some(out))
+
+    // §P1. A peer's board has no store here.
+    //
+    // `all_devices` includes the rows this node holds on a peer's behalf, and
+    // handing one to the local store path is the bug this guards: `with_store`
+    // fails INTERNAL with "owned by node ... there is no local store to read",
+    // and one peer-owned console took down the whole fan-out:
+    // search_raw({devices:"all"}) died on the first `peer:<node>/...` row.
+    //
+    // Dropping them quietly is the WRONG repair. `devices: "all"` asks "has
+    // this appeared anywhere on the bench", and an answer that silently means
+    // "anywhere on this node" is a false negative in the one tool whose job is
+    // to find the occurrence. So they come back named, the caller is told the
+    // answer is partial, and an all-remote match is an error rather than an
+    // empty result.
+    let (remote, local): (Vec<DeviceRow>, Vec<DeviceRow>) =
+        out.into_iter().partition(|d| d.kind.is_remote());
+    if local.is_empty() {
+        let node = remote
+            .first()
+            .and_then(|d| d.node.clone())
+            .unwrap_or_default();
+        return Err(ToolError::new(
+            ErrorCode::UnknownDevice,
+            format!(
+                "every device matching that selector is owned by another node ({} of them); \
+                 this node has no store for any of them",
+                remote.len()
+            ),
+        )
+        .with_hint(format!(
+            "search one of them directly, which federates: search({{\"device\": \"{node}/<selector>\"}})"
+        ))
+        .with_detail(json!({
+            "elsewhere": remote.iter().map(|d| json!({
+                "device": d.display_name(),
+                "node": d.node.clone().unwrap_or_default(),
+            })).collect::<Vec<_>>(),
+        })));
+    }
+    Ok(Some(DeviceSet { local, remote }))
+}
+
+/// The devices a cross-device call resolved to, split by who owns them.
+///
+/// `remote` is carried rather than discarded so the response can say the search
+/// was partial. See `resolve_device_set`.
+struct DeviceSet {
+    local: Vec<DeviceRow>,
+    remote: Vec<DeviceRow>,
 }
 
 /// Run one device's search and attribute every hit to it.
@@ -7414,6 +7464,7 @@ fn search_one(
 fn search_across(
     ctx: &Context,
     devices: &[DeviceRow],
+    elsewhere: &[DeviceRow],
     q: &SearchQuery,
     max: usize,
     cursor: Option<&str>,
@@ -7479,14 +7530,39 @@ fn search_across(
         })
         .collect();
     let more = hits.len() >= max || !next_map.is_empty();
-    Ok(json!({
+    // What was not looked at is part of the answer. A caller asking "anywhere
+    // on the bench" who is handed only this node's boards, with nothing saying
+    // so, reads an empty result as "it never happened".
+    let not_searched: Vec<Value> = elsewhere
+        .iter()
+        .map(|d| {
+            json!({
+                "device": d.display_name(),
+                "node": d.node.clone().unwrap_or_default(),
+            })
+        })
+        .collect();
+    let mut payload = json!({
         "hits": hits,
         "by_device": by_device,
         "devices_searched": devices.len(),
         "capped": more,
         "next_cursor": (!next_map.is_empty())
             .then(|| serde_json::to_string(&next_map).unwrap_or_default()),
-    }))
+    });
+    if !not_searched.is_empty() {
+        let o = payload.as_object_mut().expect("just built an object");
+        o.insert("not_searched".into(), json!(not_searched));
+        o.insert(
+            "partial_because".into(),
+            json!(format!(
+                "{} device(s) here are owned by other nodes and have no store on this one; \
+                 search them directly with <node>/<selector>, which federates",
+                not_searched.len()
+            )),
+        );
+    }
+    Ok(payload)
 }
 
 fn probe_power_state(ctx: &Context, d: &DeviceRow) -> Option<String> {
