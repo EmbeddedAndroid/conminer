@@ -986,7 +986,10 @@ fn actuation_scope(ctx: &Context, a: &Map<String, Value>) -> Result<ActuationSco
                 missing.len()
             ),
         )
-        .with_hint(format!("acquire({:?})", missing[0]))
+        // Point at the one call that fixes it. This named `missing[0]`, so an
+        // agent following the hint acquired one console, got the same error
+        // about the next, and walked the list by hand.
+        .with_hint(format!("acquire({{\"target\": {t:?}}})"))
         .with_detail(json!({
             "missing": missing,
             "held": held,
@@ -3199,14 +3202,18 @@ pub fn registry() -> &'static [Tool] {
         },
         Tool {
             name: "acquire",
-            description: "Reserve a device. Reads are always unrestricted; every mutating tool \
-                          requires the lease, so two agents cannot interleave whole workflows.",
+            description: "Reserve a console, or with `target` every console of a board. Reads are \
+                          always unrestricted; every mutating tool requires the lease, so two \
+                          agents cannot interleave whole workflows.",
             mutating: false,
             schema: || json!({
                 "type": "object",
-                "required": ["device"],
                 "properties": {
                     "device": {"type": "string", "description": DEVICE_ARG},
+                    "target": {"type": "string", "description":
+                        "A board: takes the lease on EVERY one of its consoles, which is exactly \
+                         what power/boot_mode with the same `target` require. Mutually exclusive \
+                         with `device`."},
                     "holder": {"type": "string", "description": "Defaults to this connection's id."},
                     "ttl_s": {"type": "integer", "minimum": 1},
                     "steal": {"type": "boolean", "default": false, "description":
@@ -3215,33 +3222,129 @@ pub fn registry() -> &'static [Tool] {
                 "additionalProperties": false
             }),
             call: |ctx, a| {
-                let d = ctx.device(s(a, "device")?)?;
+                // The lease must take the same selector the actuation takes.
+                //
+                // `power` and `boot_mode` accept a `target` and then require a
+                // lease on every console of it, but acquire only ever spoke
+                // console. So the documented flow, `acquire <target>` then
+                // `power <target>`, could not be written: acquire read the
+                // target as a device substring and failed AMBIGUOUS_DEVICE, and
+                // the caller had to scrape the console list out of a
+                // LEASE_REQUIRED detail and acquire each one by hand.
+                let target = opt_s(a, "target");
+                let device = opt_s(a, "device");
+                if target.is_some() && device.is_some() {
+                    return Err(ToolError::invalid_arg(
+                        "`device` and `target` are mutually exclusive: one names a console, the \
+                         other names every console of a board",
+                    ));
+                }
                 if let Some(h) = opt_s(a, "holder") {
                     ctx.set_holder(h);
                 }
                 let cfg = ctx.config().lease.clone();
-                let lease = ctx.registry().acquire_lease(
-                    d.id,
-                    &ctx.holder(),
-                    ctx.now(),
-                    opt_i(a, "ttl_s").unwrap_or(cfg.ttl_s as i64),
-                    cfg.max_s as i64,
-                    flag(a, "steal"),
-                )?;
-                Ok(json!({"lease": lease, "device": d.display_name()}))
+                let ttl = opt_i(a, "ttl_s").unwrap_or(cfg.ttl_s as i64);
+                let steal = flag(a, "steal");
+                let Some(t) = target else {
+                    let d = ctx.device(s(a, "device")?)?;
+                    let lease = ctx.registry().acquire_lease(
+                        d.id,
+                        &ctx.holder(),
+                        ctx.now(),
+                        ttl,
+                        cfg.max_s as i64,
+                        steal,
+                    )?;
+                    return Ok(json!({"lease": lease, "device": d.display_name()}));
+                };
+                let (consoles, exempt) = {
+                    let reg = ctx.registry();
+                    conminer_core::target::console_members(&reg, t)?
+                };
+                let (holder, now) = (ctx.holder(), ctx.now());
+                // Every blocker at once. Failing on the first means an operator
+                // holding four of five consoles learns about the fifth only
+                // after clearing the fourth, which is the same lesson
+                // `actuation_scope` already learned about reporting missing
+                // leases.
+                let mut blocked = Vec::new();
+                if !steal {
+                    for c in &consoles {
+                        let held = ctx.registry().lease(c.id)?;
+                        if let Some(l) = held {
+                            if l.expires_at > now && l.holder != holder {
+                                blocked.push(json!({
+                                    "console": c.display_name(),
+                                    "holder": l.holder,
+                                    "expires_at": l.expires_at,
+                                }));
+                            }
+                        }
+                    }
+                }
+                if !blocked.is_empty() {
+                    return Err(ToolError::new(
+                        ErrorCode::LeaseHeld,
+                        format!(
+                            "target {t:?} has {} of its {} console(s) leased by someone else",
+                            blocked.len(),
+                            consoles.len()
+                        ),
+                    )
+                    .with_hint(format!(
+                        "acquire({{\"target\": {t:?}, \"steal\": true}}) to take them"
+                    ))
+                    .with_detail(json!({"blocked": blocked})));
+                }
+                // All of them or none. A half-taken target is the state this
+                // tool exists to prevent: the actuation still refuses, and the
+                // consoles it did take are now blocking whoever could have
+                // finished the job.
+                let mut leases = Vec::new();
+                let mut taken: Vec<i64> = Vec::new();
+                for c in &consoles {
+                    let got = ctx.registry().acquire_lease(
+                        c.id,
+                        &holder,
+                        now,
+                        ttl,
+                        cfg.max_s as i64,
+                        steal,
+                    );
+                    match got {
+                        Ok(l) => {
+                            taken.push(c.id);
+                            leases.push(json!({"console": c.display_name(), "lease": l}));
+                        }
+                        Err(e) => {
+                            for id in &taken {
+                                let _ = ctx.registry().release_lease(*id, &holder);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                Ok(json!({
+                    "target": t,
+                    "leases": leases,
+                    "consoles": consoles.iter().map(|c| c.display_name()).collect::<Vec<_>>(),
+                    "exempt": exempt,
+                }))
             },
         },
         Tool {
             name: "release",
-            description: "Release a device lease so another agent can acquire the device. \
-                          Leases also expire on their own, so a crashed agent cannot hold one \
-                          forever.",
+            description: "Release a console lease, or with `target` every console of a board, so \
+                          another agent can acquire it. Leases also expire on their own, so a \
+                          crashed agent cannot hold one forever.",
             mutating: false,
             schema: || json!({
                 "type": "object",
-                "required": ["device"],
                 "properties": {
                     "device": {"type": "string", "description": DEVICE_ARG},
+                    "target": {"type": "string", "description":
+                        "A board: releases every one of its consoles. The counterpart of \
+                         acquire({target}), and mutually exclusive with `device`."},
                     "force": {"type": "boolean", "default": false, "description":
                         "Drop the lease whoever holds it. For a lease stranded by a crashed or \
                          disconnected holder, which is otherwise unreclaimable through this tool."}
@@ -3249,6 +3352,49 @@ pub fn registry() -> &'static [Tool] {
                 "additionalProperties": false
             }),
             call: |ctx, a| {
+                // The counterpart of acquire({target}): a lease taken by board
+                // has to be returnable by board, or the asymmetry just moves to
+                // the end of the workflow.
+                if let Some(t) = opt_s(a, "target") {
+                    if opt_s(a, "device").is_some() {
+                        return Err(ToolError::invalid_arg(
+                            "`device` and `target` are mutually exclusive: one names a console, \
+                             the other names every console of a board",
+                        ));
+                    }
+                    let consoles = {
+                        let reg = ctx.registry();
+                        conminer_core::target::console_members(&reg, t)?.0
+                    };
+                    let holder = ctx.holder();
+                    let force = flag(a, "force");
+                    // Keep going past the ones that were not held. A partial
+                    // release that stops at the first console this holder never
+                    // had would strand the rest, which is the failure the
+                    // all-or-nothing acquire is meant to make impossible.
+                    let mut released = Vec::new();
+                    let mut not_held = Vec::new();
+                    for c in &consoles {
+                        let done = if force {
+                            ctx.registry().force_release_lease(c.id)
+                        } else {
+                            ctx.registry().release_lease(c.id, &holder).map(|()| true)
+                        };
+                        match done {
+                            Ok(true) => {
+                                let _ = ctx.registry().release_exclusive(c.id);
+                                released.push(c.display_name().to_string());
+                            }
+                            Ok(false) | Err(_) => not_held.push(c.display_name().to_string()),
+                        }
+                    }
+                    return Ok(json!({
+                        "target": t,
+                        "released": released,
+                        "not_held": not_held,
+                        "forced": force,
+                    }));
+                }
                 let d = ctx.device(s(a, "device")?)?;
                 if flag(a, "force") {
                     let dropped = ctx.registry().force_release_lease(d.id)?;

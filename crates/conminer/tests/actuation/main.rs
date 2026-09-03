@@ -413,3 +413,145 @@ sirocco>
 
     std::env::remove_var("CONMINER_USB_FIXTURE");
 }
+
+/// A board whose target has TWO capturing consoles plus an ignored controller,
+/// which is the shape every multi-console board on the bench has.
+fn two_console_board(rig: &Rig, target: &str) -> (String, String) {
+    const AP2: &str = "/dev/serial/by-id/usb-Fixture_Board-if02-port0";
+    let mut reg = Registry::open(&rig.dir).unwrap();
+    for (path, ignored) in [(AP, false), (AP2, false), (CTL, true)] {
+        let d = reg
+            .upsert_device(path, None, IdentityKind::ById, None, 0)
+            .unwrap();
+        reg.set_target(d.id, Some(target)).unwrap();
+        reg.set_ignored(d.id, ignored).unwrap();
+    }
+    (AP.to_string(), AP2.to_string())
+}
+
+/// The lease must take the same selector the actuation takes.
+///
+/// `power` and `boot_mode` accept a `target` and then require a lease on every
+/// console of it, but `acquire` only ever spoke console. So the documented flow,
+/// `acquire <target>` then `power <target>`, could not be written at all:
+/// acquire read the target as a device substring and failed AMBIGUOUS_DEVICE,
+/// and the caller had to scrape the console list out of a LEASE_REQUIRED detail
+/// and acquire each one by hand.
+#[test]
+fn a_target_lease_covers_every_console_the_actuation_will_need() {
+    let rig = Rig::with_config(cfg());
+    let (ap, ap2) = two_console_board(&rig, "2.4");
+
+    let got = rig.call("acquire", json!({"target": "2.4", "ttl_s": 600}));
+    let leased: Vec<String> = got["consoles"]
+        .as_array()
+        .expect("the consoles it took")
+        .iter()
+        .map(|c| c.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        leased.contains(&ap) && leased.contains(&ap2),
+        "a target lease must cover every capturing console: {got}"
+    );
+    assert_eq!(
+        got["leases"].as_array().map(|a| a.len()),
+        Some(2),
+        "one lease per console, not one for the board: {got}"
+    );
+    // The controller is a member of the target but captures nothing, and
+    // actuation does not require a lease on it.
+    assert!(
+        !leased.contains(&CTL.to_string()),
+        "an ignored member is exempt, not leased: {got}"
+    );
+
+    // The point of the whole thing: the actuation the runbook says to make next
+    // must now go through without the caller touching a single console name.
+    let acted = rig.call(
+        "power",
+        json!({"target": "2.4", "action": "off", "dry_run": true}),
+    );
+    assert!(
+        acted["lease_missing"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
+        "acquire by target must satisfy power by target: {acted}"
+    );
+
+    let freed = rig.call("release", json!({"target": "2.4"}));
+    let released = freed["released"].as_array().expect("what it gave back");
+    assert_eq!(
+        released.len(),
+        2,
+        "a lease taken by board is returnable by board: {freed}"
+    );
+}
+
+/// The error an agent actually reads has to name the call that fixes it.
+///
+/// This hint named one console, so an agent that followed it acquired that
+/// console, got the same error about the next, and walked the list by hand.
+#[test]
+fn a_missing_target_lease_points_at_the_target_form() {
+    let rig = Rig::with_config(cfg());
+    two_console_board(&rig, "2.4");
+    let e = rig.err("power", json!({"target": "2.4", "action": "off"}));
+    assert_eq!(e["code"], "LEASE_REQUIRED", "{e}");
+    let hint = e["hint"].as_str().unwrap_or_default();
+    assert!(
+        hint.contains("target") && hint.contains("2.4"),
+        "the hint must point at the one call that fixes this, not at one \
+         console of several: {hint:?}"
+    );
+}
+
+/// All of them or none.
+///
+/// A half-taken target is the state this exists to prevent: the actuation still
+/// refuses, and the consoles it did take now block whoever could have finished
+/// the job.
+#[test]
+fn a_target_lease_blocked_on_one_console_takes_none_of_them() {
+    let rig = Rig::with_config(cfg());
+    let (ap, ap2) = two_console_board(&rig, "2.4");
+    // Somebody else holds exactly one of the two.
+    rig.call(
+        "acquire",
+        json!({"device": ap2, "holder": "another agent", "ttl_s": 600}),
+    );
+
+    let e = rig.err(
+        "acquire",
+        json!({"target": "2.4", "holder": "me", "ttl_s": 600}),
+    );
+    assert_eq!(e["code"], "LEASE_HELD", "{e}");
+
+    // The free one must still be free, and this is checked first because it is
+    // the half that does damage: if the refusal left `ap` leased to "me", the
+    // agent that holds `ap2` can no longer finish either, and neither of us can
+    // actuate the board.
+    let taken_anyway = rig.call(
+        "acquire",
+        json!({"device": ap, "holder": "another agent", "ttl_s": 600}),
+    );
+    assert!(
+        taken_anyway["lease"]["holder"] == "another agent",
+        "a refused target lease must leave nothing behind: {taken_anyway}"
+    );
+    assert!(
+        e["detail"]["blocked"]
+            .as_array()
+            .is_some_and(|b| b.len() == 1 && b[0]["console"] == ap2),
+        "every blocker must be named, with who holds it: {e}"
+    );
+}
+
+/// `device` and `target` name different things and cannot both be right.
+#[test]
+fn acquire_refuses_a_device_and_a_target_at_once() {
+    let rig = Rig::with_config(cfg());
+    let (ap, _) = two_console_board(&rig, "2.4");
+    let e = rig.err("acquire", json!({"device": ap, "target": "2.4"}));
+    assert_eq!(e["code"], "INVALID_ARGUMENT", "{e}");
+}
