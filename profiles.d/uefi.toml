@@ -88,13 +88,22 @@ component = 'uefi'
 # above claims the same component on purpose: a board prints one shape or the
 # other, so whichever the boot actually carries is what identifies its BL33.
 #
+# The version capture is lazy rather than \S+ because PcdFirmwareVersionString
+# is whatever the platform DSC puts in it: in edk2's own tree it is L"2.7" and
+# L"$(FIRMWARE_VER)", a build macro, and a project that stamps "1.0 RC1" or a
+# date into it would match nothing at all under \S+. A board silently reporting
+# no BL33 is the worst failure this extractor has, because it reads as "that
+# stage printed nothing" rather than as a gap. Laziness stops at the first
+# " built at ", and the literal tail still does the rejecting: an empty PCD
+# leaves nothing to capture, and a banner cut short by a reset has no ")".
+#
 # Without this the line was seen but never became a version: it is a `banners`
 # entry (it opens the uefi stage) and an `[extract]` field (it becomes a
 # template slot), and neither of those reaches `epoch_versions`. An epoch that
 # entered the uefi stage off this very line still reported versions =
 # {kernel, machine}, so a BL33 build could not be verified through conminer.
 [[version_banners]]
-pattern = 'UEFI firmware \(version (?P<version>\S+) built at (?P<build_date>[^)]*)\)'
+pattern = 'UEFI firmware \(version (?P<version>.+?) built at (?P<build_date>[^)]*)\)'
 component = 'uefi'
 
 [[version_banners]]

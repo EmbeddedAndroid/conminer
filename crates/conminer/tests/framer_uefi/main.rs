@@ -181,3 +181,56 @@ fn a_truncated_firmware_banner_is_not_stored_as_a_version() {
         "half a banner is not a build: {versions:?}"
     );
 }
+
+/// PcdFirmwareVersionString is whatever the platform DSC puts in it.
+///
+/// edk2's own tree ships `L"2.7"` and `L"$(FIRMWARE_VER)"`, a build macro, and
+/// the three call sites that print this banner (ArmPlatformPkg/Sec,
+/// ArmPlatformPkg/PeilessSec, ArmVirtPkg/PrePi) all pass that PCD straight
+/// through. A project that stamps "1.0 RC1", or a date, into it is doing
+/// nothing unusual, and a version capture of `\S+` matches NOTHING on such a
+/// board: the banner is there on the console and conminer reports no BL33 at
+/// all, which reads as "that stage printed nothing" rather than as a gap.
+#[test]
+fn a_firmware_version_containing_spaces_is_captured_whole() {
+    let rig = conminer_testkit::Rig::new();
+    let store = rig.ingest_text(
+        "/dev/ttyUSBedk2spaced",
+        Some("uefi"),
+        "UEFI firmware (version 1.0 RC1 built at 19:19:40 on Sep  3 2026)\n",
+    );
+    let boot = store.list_boots(5).unwrap()[0].id;
+    let versions = store.versions_in_boot(boot).unwrap();
+    let uefi = versions
+        .iter()
+        .find(|(c, _)| c == "uefi")
+        .map(|(_, v)| v)
+        .unwrap_or_else(|| panic!("a spaced version is still a version: {versions:?}"));
+    assert_eq!(
+        uefi["version"], "1.0 RC1",
+        "the capture stops at the first ` built at `, not at the first space: {uefi}"
+    );
+    assert_eq!(uefi["build_date"], "19:19:40 on Sep  3 2026", "{uefi}");
+}
+
+/// The direction that loosening the capture could have broken.
+///
+/// An unset PCD prints `(version  built at ...)` with nothing between the
+/// spaces. That must stay unclaimed: a board that did not say what it is
+/// running has not said it, and inventing " " or "built" as its version would
+/// put a false answer in front of the one check meant to catch a stale image.
+#[test]
+fn an_unset_firmware_version_claims_nothing() {
+    let rig = conminer_testkit::Rig::new();
+    let store = rig.ingest_text(
+        "/dev/ttyUSBedk2unset",
+        Some("uefi"),
+        "UEFI firmware (version  built at 19:19:40 on Sep  3 2026)\n",
+    );
+    let boot = store.list_boots(5).unwrap()[0].id;
+    let versions = store.versions_in_boot(boot).unwrap();
+    assert!(
+        !versions.iter().any(|(c, _)| c == "uefi"),
+        "an empty version string is not a build: {versions:?}"
+    );
+}
