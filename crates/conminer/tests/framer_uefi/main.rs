@@ -97,3 +97,87 @@ fn mid_record_stream_loss_is_flagged_truncated() {
     );
     assert!(r.crashes()[0].truncated);
 }
+
+/// §F2. The EDK2 SEC banner is a VERSION, not just the marker that opens a stage.
+///
+/// `ArmPlatformPkg/PeilessSec` writes "UEFI firmware (version %s built at %a on
+/// %a)" straight to the serial port rather than through DEBUG, so it survives a
+/// release build with debug output off, and the %s is
+/// `PcdFirmwareVersionString`: the field a project stamps its build fingerprint
+/// into. The profile already saw the line twice over, as a `banners` entry that
+/// enters the uefi stage and as an `[extract]` field that becomes a template
+/// slot, and neither of those reaches `epoch_versions`. So the one line that
+/// says which BL33 is running never became a version.
+///
+/// An epoch that ENTERED the uefi stage off this very line still reported
+/// `versions` = {kernel, machine}, so a BL33 build could not be verified
+/// through conminer at all.
+#[test]
+fn the_edk2_firmware_banner_becomes_a_uefi_version() {
+    let rig = conminer_testkit::Rig::new();
+    let store = rig.ingest_text(
+        "/dev/ttyUSBedk2",
+        Some("uefi"),
+        "UEFI firmware (version BUILDFP-260903-181219 built at 19:19:40 on Sep  3 2026)\n",
+    );
+    let boot = store.list_boots(5).unwrap()[0].id;
+    let versions = store.versions_in_boot(boot).unwrap();
+    let uefi = versions
+        .iter()
+        .find(|(c, _)| c == "uefi")
+        .map(|(_, v)| v)
+        .unwrap_or_else(|| panic!("the banner must identify BL33: {versions:?}"));
+    assert_eq!(
+        uefi["version"], "BUILDFP-260903-181219",
+        "the fingerprint is what PcdFirmwareVersionString carries: {uefi}"
+    );
+    // The date is the half that distinguishes two builds stamped alike, so it
+    // has to survive as detail rather than be parsed away.
+    assert_eq!(
+        uefi["build_date"], "19:19:40 on Sep  3 2026",
+        "the banner's build date belongs with it: {uefi}"
+    );
+}
+
+/// The other half: this must identify a BL33, not decorate every uefi boot.
+///
+/// A version that appears when the board never printed one is worse than no
+/// version, because provenance would then compare a claim against noise.
+#[test]
+fn uefi_output_without_that_banner_yields_no_uefi_version() {
+    let rig = conminer_testkit::Rig::new();
+    let store = rig.ingest_text(
+        "/dev/ttyUSBedk2quiet",
+        Some("uefi"),
+        "[Bds] Entry...\n\
+         BdsDxe: loading Boot0001 \"UEFI Shell\" from Fv\n\
+         Shell> \n",
+    );
+    let boot = store.list_boots(5).unwrap()[0].id;
+    let versions = store.versions_in_boot(boot).unwrap();
+    assert!(
+        !versions.iter().any(|(c, _)| c == "uefi"),
+        "a uefi boot that printed no firmware banner has not said what it is: {versions:?}"
+    );
+}
+
+/// A banner cut off by a reset or a garbled line is not a version either.
+///
+/// The pattern requires the closing parenthesis precisely so a half-arrived line
+/// cannot be stored as the running build: `version BUILDFP-...` with the rest of
+/// the line missing would otherwise read as a complete answer.
+#[test]
+fn a_truncated_firmware_banner_is_not_stored_as_a_version() {
+    let rig = conminer_testkit::Rig::new();
+    let store = rig.ingest_text(
+        "/dev/ttyUSBedk2cut",
+        Some("uefi"),
+        "UEFI firmware (version BUILDFP-260903-181219 built at 19:19:4\n",
+    );
+    let boot = store.list_boots(5).unwrap()[0].id;
+    let versions = store.versions_in_boot(boot).unwrap();
+    assert!(
+        !versions.iter().any(|(c, _)| c == "uefi"),
+        "half a banner is not a build: {versions:?}"
+    );
+}

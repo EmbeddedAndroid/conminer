@@ -80,6 +80,23 @@ uefi_version = 'UEFI firmware \(version (?P<uefi_version>\S+)'
 pattern = 'UEFI Ver\s*:\s*(?P<version>.+?)\s*$'
 component = 'uefi'
 
+# The OTHER UEFI shape, and the one an open EDK2 build prints. PeilessSec (and
+# every other ArmPlatformPkg SEC) writes "UEFI firmware (version %s built at %a
+# on %a)" straight to the serial port, not through DEBUG, so it survives a
+# release build with debug output off; %s is PcdFirmwareVersionString, which is
+# where a project stamps its build fingerprint. The vendor 'UEFI Ver :' entry
+# above claims the same component on purpose: a board prints one shape or the
+# other, so whichever the boot actually carries is what identifies its BL33.
+#
+# Without this the line was seen but never became a version: it is a `banners`
+# entry (it opens the uefi stage) and an `[extract]` field (it becomes a
+# template slot), and neither of those reaches `epoch_versions`. An epoch that
+# entered the uefi stage off this very line still reported versions =
+# {kernel, machine}, so a BL33 build could not be verified through conminer.
+[[version_banners]]
+pattern = 'UEFI firmware \(version (?P<version>\S+) built at (?P<build_date>[^)]*)\)'
+component = 'uefi'
+
 [[version_banners]]
 pattern = 'QC_IMAGE_VERSION_STRING\s*=\s*(?P<version>.+?)\s*$'
 component = 'xbl'

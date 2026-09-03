@@ -537,3 +537,41 @@ fn releasing_the_lease_clears_a_claim_that_outlived_its_holder() {
         "a claim must not outlive the lease it was taken under: {again}"
     );
 }
+
+/// §F2. An open boot chain must report its BL33 alongside everything else.
+///
+/// A board that runs TF-A into an open EDK2 BL33 into Linux has every stage
+/// but EDK2 naming itself: bl2, bl31 and kernel landed in
+/// `running_versions` while the UEFI line sat in the store as ordinary text.
+/// A chain with a hole in it is the shape that lets a stale BL33 survive a
+/// flash unnoticed, since there is nothing to compare.
+#[test]
+fn an_open_edk2_bl33_is_named_in_the_running_chain() {
+    let rig = McpRig::new();
+    let (device, _) = rig.ingest(
+        "boot.log",
+        "NOTICE:  BL2: v2.13.0(release):BUILDFP-260903-181219\n\
+         NOTICE:  BL31: v2.13.0(release):BUILDFP-260903-181219\n\
+         UEFI firmware (version BUILDFP-260903-181219 built at 19:19:40 on Sep  3 2026)\n\
+         [    3.000000] Linux version 6.12.9 (build@lab) (gcc 14.2.0) #1 SMP\n",
+        None,
+    );
+    let p = rig.call("provenance", json!({"device": device}));
+    let running = &p["running_versions"];
+    for want in ["bl2", "bl31", "uefi", "kernel"] {
+        assert!(
+            running.get(want).is_some(),
+            "the chain must be reported whole, and {want} is missing: {p:#}"
+        );
+    }
+    assert_eq!(
+        running["uefi"], "BUILDFP-260903-181219",
+        "BL33 identifies itself by its firmware banner: {p:#}"
+    );
+    // Checkable against the console rather than trusted, like every other
+    // component in the chain.
+    assert!(
+        p["running"]["uefi"]["line_id"].is_i64(),
+        "the uefi claim must point at the line it came from: {p:#}"
+    );
+}
