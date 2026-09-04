@@ -2515,3 +2515,116 @@ fn the_peers_tool_reports_a_name_collision() {
         .collect();
     assert!(ids.contains(&"id-one") && ids.contains(&"id-two"), "{out}");
 }
+
+/// §P2. One builder for what the owner publishes about driving a board.
+///
+/// A node publishes its inventory two ways: a peer PULLS it with
+/// `list_devices {detail:true}`, and the reachable side PUSHES the same shape
+/// through `peer_announce`. Those were two independent builders of the
+/// `controls` object, each carrying a comment claiming it matched the other,
+/// and they drifted the moment a field was added to one.
+///
+/// On the SAME build on both nodes: `controller_label` went into the pull side
+/// only, so the node that pulls named its peer's boards, while the node that
+/// only ever hears an announce still drew them headed by a raw by-id path.
+/// Which builder ran was decided by
+/// the direction the inventory happened to travel, which is not a thing a
+/// reader of either file could see.
+#[test]
+fn both_inventory_paths_publish_controls_from_the_same_builder() {
+    let announce = include_str!("../../src/service.rs");
+    let pull = include_str!("../../../conminer-mcp/src/tools.rs");
+
+    for (what, src) in [("the announce path", announce), ("the pull path", pull)] {
+        assert!(
+            src.contains("inventory::controls_for("),
+            "{what} must build `controls` with the shared builder"
+        );
+    }
+
+    // And neither may grow its own copy again. `boot_modes` is a field of that
+    // object and of nothing else, so a second one appearing next to a
+    // `"controls"` key is the drift coming back.
+    for (what, src) in [("the announce path", announce), ("the pull path", pull)] {
+        let after_controls: Vec<&str> = src
+            .split("\"controls\":")
+            .skip(1)
+            .map(|s| &s[..s.len().min(400)])
+            .collect();
+        for chunk in after_controls {
+            assert!(
+                !chunk.contains("\"boot_modes\""),
+                "{what} is building the controls object inline again: {chunk}"
+            );
+        }
+    }
+}
+
+/// The name travels even though the controller's row never does.
+///
+/// The controller serves no console and is deliberately never advertised, so a
+/// peer has nothing local to read a name from. Publishing the name with the
+/// board is what lets a peer head the chassis "node/label" instead of a by-id
+/// path, and it must come from the owner's row for the controller it actually
+/// resolved, not from the console being described.
+#[test]
+fn the_published_controls_name_the_controller_that_drives_the_board() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut reg = conminer_core::store::Registry::open(dir.path()).unwrap();
+    let controllers = vec![conminer_core::config::ControllerProfile {
+        name: "bantam".into(),
+        match_glob: "*Bantam*".into(),
+        controls: "*FTDI_RIDE*".into(),
+        power_state: None,
+        power: None,
+        boot_mode: None,
+        flash: None,
+        boot_modes: Vec::new(),
+        power_timeout_s: None,
+        off_settle_s: 0.0,
+        exclude_from_discovery: true,
+        mode_enters_immediately: false,
+    }];
+    let cfg = conminer_core::config::Config {
+        controllers,
+        ..Default::default()
+    };
+
+    const CTL: &str = "/dev/serial/by-id/usb-Microchip_Bantam_CTRL0001-if00";
+    const CONSOLE: &str = "/dev/serial/by-id/usb-FTDI_RIDE_UART_AAAA-if00-port0";
+    let ctl = reg
+        .upsert_device(
+            CTL,
+            Some("pci-0000:00:14.0-usb-0:5.2.1:1.0"),
+            IdentityKind::ById,
+            None,
+            0,
+        )
+        .unwrap();
+    reg.set_nickname(ctl.id, "BOARD-A").unwrap();
+    reg.set_ignored(ctl.id, true).unwrap();
+    let con = reg
+        .upsert_device(
+            CONSOLE,
+            Some("pci-0000:00:14.0-usb-0:5.2.4:1.0"),
+            IdentityKind::ById,
+            None,
+            0,
+        )
+        .unwrap();
+
+    let all = reg.all_devices().unwrap();
+    let present = conminer_core::store::registry::present_on_this_host(&all);
+    let con = all.iter().find(|d| d.id == con.id).unwrap();
+    let controls = conminer_core::peers::inventory::controls_for(&cfg, con, &all, &present);
+
+    assert_eq!(
+        controls["controller_label"], "BOARD-A",
+        "the owner must publish what it calls the controller: {controls}"
+    );
+    assert_ne!(
+        controls["controller_label"],
+        serde_json::Value::Null,
+        "an ignored controller row is still the thing the board is named after"
+    );
+}

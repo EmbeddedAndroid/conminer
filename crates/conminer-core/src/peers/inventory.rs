@@ -17,7 +17,7 @@ use super::registry::{self as peer_registry, PeerRow};
 use super::{remote_canonical, remote_target, split_remote, valid_node_name};
 use crate::error::Result;
 use crate::store::registry::DeviceKind;
-use crate::store::{IdentityKind, Registry};
+use crate::store::{DeviceRow, IdentityKind, Registry};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -124,6 +124,66 @@ fn sync_one(
     )?;
     let devices = extract_devices(&reply);
     import_devices(reg, peer, &devices, base_port, now, this_node)
+}
+
+/// What the owner says about driving a board, built in ONE place.
+///
+/// A node publishes its inventory two ways: a peer PULLS it with
+/// `list_devices {detail:true}`, and the reachable side PUSHES the same shape
+/// through `peer_announce` (see `service::local_inventory`). Those were two
+/// independent builders of this object, each carrying a comment saying it
+/// matched the other, and they drifted the moment a field was added to one.
+///
+/// `controller_label` was added to the pull side only, so the node that pulls
+/// named its peer's boards correctly, while the node that only ever hears an
+/// announce still drew them headed by a raw by-id path. Same build on both
+/// nodes, opposite results, because the direction the inventory travelled
+/// decided which builder ran.
+///
+/// One builder, two callers. `all` is every row the owner holds, not the
+/// filtered view a caller happens to be rendering: the controller's row is
+/// exactly the kind a filter drops, and its name is what this reads.
+pub fn controls_for(
+    cfg: &crate::config::Config,
+    d: &DeviceRow,
+    all: &[DeviceRow],
+    present: &[(String, Option<String>)],
+) -> Value {
+    let names = || present.iter().map(|(n, p)| (n.as_str(), p.as_deref()));
+    let controller_port = cfg.controller_port_for(&d.canonical, d.by_path.as_deref(), names());
+    // The controller's registry row is deliberately never advertised: it serves
+    // no console, and re-exporting an unserved device once handed peers local
+    // ports pointing at nothing. But a peer still has to NAME the board, and the
+    // dashboard names it after its controller, so the name travels even though
+    // the row does not. A peer shows it read-only: a label written on the wrong
+    // node resolves to nothing.
+    let controller_label = controller_port.as_deref().and_then(|port| {
+        all.iter()
+            .find(|c| c.canonical == port)
+            .and_then(|c| c.nickname.clone())
+    });
+    json!({
+        "controller": cfg
+            .controller_for_at(&d.canonical, d.by_path.as_deref(), names())
+            .map(|c| c.name.clone()),
+        "boot_modes": cfg.boot_modes_for_at(
+            d.display_name(),
+            &d.canonical,
+            d.by_path.as_deref(),
+            names(),
+        ),
+        // One probe per remote BOARD instead of one per remote console.
+        "controller_port": controller_port,
+        "controller_label": controller_label,
+        "has_power_hook": cfg
+            .power_hook_for_at(
+                d.display_name(),
+                &d.canonical,
+                d.by_path.as_deref(),
+                names(),
+            )
+            .is_some(),
+    })
 }
 
 /// Apply a peer's device list, however it arrived.

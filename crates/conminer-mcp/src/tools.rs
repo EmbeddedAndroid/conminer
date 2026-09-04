@@ -1249,6 +1249,10 @@ pub fn registry() -> &'static [Tool] {
                 // needs to know what is plugged in HERE, and asking per row
                 // would re-scan for every device on the bench.
                 let present = present_with_topology(ctx);
+                // EVERY row the registry holds, not the filtered view being
+                // rendered: the controller's row is exactly what a filter drops,
+                // and the shared controls builder reads its name.
+                let all_rows = ctx.registry().all_devices().unwrap_or_default();
                 let mut out = Vec::new();
                 for d in &devices {
                     let endpoint = d
@@ -1357,77 +1361,31 @@ pub fn registry() -> &'static [Tool] {
                         // showed no controller and no power buttons on every
                         // node but this one. For a row we hold on somebody
                         // else's behalf, pass on what they told us.
+                        // §P2. How this board is driven, from the only node
+                        // that can tell: its owner. A peer cannot work this out
+                        // for itself, since the controller profiles match a
+                        // by-id name against hardware plugged in HERE, so a
+                        // relayed board showed no controller and no power
+                        // buttons on every node but this one. For a row we hold
+                        // on somebody else's behalf, pass on what they told us.
+                        //
+                        // Only when the sender actually said something. An
+                        // absent key is "I did not tell you", not "there are no
+                        // controls", and writing NULL for it erases the owner's
+                        // own answer. With three nodes relaying each other that
+                        // erasure propagates: one node's blank overwrites
+                        // another's good value, which the third relays back.
+                        //
+                        // The object itself is built by the shared builder the
+                        // announce path also uses, so the two cannot drift.
                         "controls": match &d.remote_controls {
                             Some(c) => c.clone(),
-                            None => json!({
-                                "controller": ctx
-                                    .config()
-                                    .controller_for_at(
-                                        &d.canonical,
-                                        d.by_path.as_deref(),
-                                        present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                                    )
-                                    .map(|c| c.name.clone()),
-                                "boot_modes": ctx.config().boot_modes_for_at(
-                                    d.display_name(),
-                                    &d.canonical,
-                                    d.by_path.as_deref(),
-                                    present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                                ),
-                                // §P3. WHICH CONTROLLER INSTANCE, not just which
-                                // profile. A peer's consoles all share one
-                                // controller and therefore ONE power state, and
-                                // the receiving node cannot work that out: the
-                                // controller is plugged into somebody else's
-                                // host. Without it every remote console is its
-                                // own group and gets its own probe -- eleven
-                                // forwarded calls per sweep on this bench, so
-                                // slow that every reading expired before the
-                                // next one landed and the whole peer rack showed
-                                // no power at all.
-                                "controller_port": ctx.config().controller_port_for(
-                                    &d.canonical,
-                                    d.by_path.as_deref(),
-                                    present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                                ),
-                                // What the owner calls that controller.
-                                //
-                                // The controller's registry row lives here and
-                                // is deliberately never advertised: it serves no
-                                // console, and re-exporting an unserved device
-                                // once handed peers local ports pointing at
-                                // nothing. But a peer still has to NAME the
-                                // board, and the dashboard names it after its
-                                // controller. Without this a peer's chassis was
-                                // headed by a raw by-id path while the owner
-                                // showed "BOARD-A".
-                                //
-                                // The name only, not the row: a peer displays it
-                                // read-only, because a label written on the
-                                // wrong node resolves to nothing.
-                                "controller_label": ctx
-                                    .config()
-                                    .controller_port_for(
-                                        &d.canonical,
-                                        d.by_path.as_deref(),
-                                        present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                                    )
-                                    .and_then(|port| {
-                                        devices
-                                            .iter()
-                                            .find(|c| c.canonical == port)
-                                            .and_then(|c| c.nickname.clone())
-                                    }),
-                                "has_power_hook": ctx
-                                    .config()
-                                    .power_hook_for_at(
-                                        d.display_name(),
-                                        &d.canonical,
-                                        d.by_path.as_deref(),
-                                        present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                                    )
-                                    .is_some(),
-                            }),
+                            None => conminer_core::peers::inventory::controls_for(
+                                ctx.config(),
+                                d,
+                                &all_rows,
+                                &present,
+                            ),
                         },
                     });
                     add_power(&mut row, &power_map, &d.canonical);

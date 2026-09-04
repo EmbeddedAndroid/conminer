@@ -529,36 +529,16 @@ fn local_inventory(
             // side publishes, so one import rule serves both.
             "hops": 0,
             // The owner is the only node that can answer this; see §P2.
-            "controls": serde_json::json!({
-                "controller": cfg
-                    .controller_for_at(
-                        &d.canonical,
-                        d.by_path.as_deref(),
-                        names.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                    )
-                    .map(|c| c.name.clone()),
-                "boot_modes": cfg.boot_modes_for_at(
-                    d.display_name(),
-                    &d.canonical,
-                    d.by_path.as_deref(),
-                    names.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                ),
-                // Same field, same reason, as the pull side emits: one probe
-                // per remote BOARD instead of one per remote console.
-                "controller_port": cfg.controller_port_for(
-                    &d.canonical,
-                    d.by_path.as_deref(),
-                    names.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                ),
-                "has_power_hook": cfg
-                    .power_hook_for_at(
-                        d.display_name(),
-                        &d.canonical,
-                        d.by_path.as_deref(),
-                        names.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                    )
-                    .is_some(),
-            }),
+            //
+            // Built by the SHARED builder the pull side also uses. This was a
+            // second, independent copy carrying a comment saying it matched the
+            // other one, and it drifted the moment a field was added: the pull
+            // side learned to publish the controller's name and this did not,
+            // so a node that only ever hears us ANNOUNCE drew our boards headed
+            // by a raw by-id path while a node that pulls named them correctly.
+            "controls": conminer_core::peers::inventory::controls_for(
+                cfg, d, &present, &names,
+            ),
         }));
     }
     Ok(out)
