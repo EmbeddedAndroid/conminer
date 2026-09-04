@@ -1390,6 +1390,34 @@ pub fn registry() -> &'static [Tool] {
                                     d.by_path.as_deref(),
                                     present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
                                 ),
+                                // What the owner calls that controller.
+                                //
+                                // The controller's registry row lives here and
+                                // is deliberately never advertised: it serves no
+                                // console, and re-exporting an unserved device
+                                // once handed peers local ports pointing at
+                                // nothing. But a peer still has to NAME the
+                                // board, and the dashboard names it after its
+                                // controller. Without this a peer's chassis was
+                                // headed by a raw by-id path while the owner
+                                // showed "BOARD-A".
+                                //
+                                // The name only, not the row: a peer displays it
+                                // read-only, because a label written on the
+                                // wrong node resolves to nothing.
+                                "controller_label": ctx
+                                    .config()
+                                    .controller_port_for(
+                                        &d.canonical,
+                                        d.by_path.as_deref(),
+                                        present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
+                                    )
+                                    .and_then(|port| {
+                                        devices
+                                            .iter()
+                                            .find(|c| c.canonical == port)
+                                            .and_then(|c| c.nickname.clone())
+                                    }),
                                 "has_power_hook": ctx
                                     .config()
                                     .power_hook_for_at(

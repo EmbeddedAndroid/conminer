@@ -359,6 +359,9 @@ button.copied { color: var(--live); border-color: var(--live); }
     100% { box-shadow: 0 0 7px color-mix(in srgb, var(--live) 80%, transparent); }
   }
 }
+.ctl-owned-label { font-size: 11px; color: var(--muted); font-weight: 600;
+  letter-spacing: .2px; margin-left: auto; padding: 1px 6px;
+  border: 1px dashed var(--line); border-radius: 4px; }
 .adapter-name { font-size: 12px; font-weight: 700; color: var(--ink);
                 letter-spacing: .5px; text-transform: uppercase; }
 .adapter-sub { font-size: 11.5px; color: var(--muted); letter-spacing: .2px; }
@@ -898,11 +901,15 @@ function renderRack(physical, grid, panelled) {
       led.className = "adapter-led" + (anyLive ? " live" : "");
       const name = document.createElement("span");
       name.className = "adapter-name";
-      name.textContent = prettyAdapter(key);
-      // Clipped to one line on a phone, so the full name has to live somewhere:
-      // a peer's chassis is named by its owner's by-id path, which is longer
-      // than any handset is wide.
-      name.title = prettyAdapter(key);
+      // A peer's chassis is keyed by its owner's controller path, which is an
+      // identity and not a name. The owner sends what it calls that controller,
+      // so the header reads "node/label" rather than a by-id string. A local
+      // chassis sends no label and prettifies its own key, exactly as before.
+      const heading = devices.find(x => x.adapter_label)?.adapter_label
+        || prettyAdapter(key);
+      name.textContent = heading;
+      // Clipped to one line on a phone, so the full name has to live somewhere.
+      name.title = heading;
       const sub = document.createElement("span");
       sub.className = "adapter-sub";
       // A console is a device with an ENDPOINT, not one that fails to be a
@@ -1159,6 +1166,16 @@ function controllerCard(d) {
   // name (naming it would silently create a label nothing resolves).
   if (d.controller_port && !d.node) {
     head.appendChild(labelChip(d.controller_port, d.controller_label));
+  } else if (d.controller_label) {
+    // A peer's controller still has a name, it just is not ours to change. The
+    // owner sends the label; shown read-only, because otherwise the panel
+    // reads "board controller" on every node but the owner. No chip, because
+    // a label written here resolves to nothing.
+    const owned = document.createElement("span");
+    owned.className = "ctl-owned-label";
+    owned.textContent = d.controller_label;
+    owned.title = "named on " + (d.node || "its owner");
+    head.appendChild(owned);
   }
   box.appendChild(head);
 

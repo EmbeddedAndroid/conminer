@@ -197,6 +197,13 @@ pub struct DashDevice {
     /// `-ifNN` suffix. Grouping by what remains is how the page shows one board
     /// as one board.
     pub adapter: Option<String>,
+    /// What to head this console's chassis with, when the grouping key is not
+    /// something a human should have to read.
+    ///
+    /// Only ever set for a board held on a peer's behalf, whose key is the
+    /// owner's controller path. `None` means the page prettifies the key
+    /// itself, which is what the local bench has always done.
+    pub adapter_label: Option<String>,
     pub port: Option<u16>,
     /// Boot modes this device accepts, for the dashboard's controls.
     pub boot_modes: Vec<String>,
@@ -319,6 +326,7 @@ impl Default for DashDevice {
             nickname: None,
             target: None,
             adapter: None,
+            adapter_label: None,
             port: None,
             boot_modes: Vec::new(),
             has_power_hook: false,
@@ -677,8 +685,53 @@ impl Dash {
                     node_host: d.node_host.clone(),
                     nickname: d.nickname.clone(),
                     target: d.target.clone(),
-                    adapter: topology_group(d.by_path.as_deref())
-                        .or_else(|| adapter_of(&d.canonical)),
+                    // One board is one chassis, on every node.
+                    //
+                    // `topology_group` needs `by_path`, which is the cable's
+                    // position on THIS host; a row held on a peer's behalf has
+                    // none, so this fell through to `adapter_of`, a textual
+                    // split at `-ifNN` of the peer id. Two things went wrong at
+                    // once: the chassis was headed by a raw by-id path, and a
+                    // board with two FTDI chips split in half, because only the
+                    // topology knows they are one board: the owner drew one
+                    // chassis of seven ports, and its peer drew the same
+                    // hardware as two chassis of four and two with no
+                    // controller between them.
+                    //
+                    // The owner already tells us which controller INSTANCE
+                    // drives each console, and one controller is one board. So
+                    // a remote row groups by that, and only falls back when the
+                    // owner named no controller at all.
+                    adapter: controller_port
+                        .clone()
+                        // Remote only. Locally `topology_group` is the better
+                        // answer and always available, and regrouping this
+                        // bench by controller path would rename every chassis
+                        // an operator already knows.
+                        .filter(|_| d.node.is_some())
+                        .or_else(|| {
+                            topology_group(d.by_path.as_deref())
+                                .or_else(|| adapter_of(&d.canonical))
+                        }),
+                    // What to HEAD that chassis with, when the key is not itself
+                    // readable. `None` leaves the page's own prettifier in
+                    // charge, so the local bench renders exactly as before.
+                    adapter_label: d.node.as_deref().map(|node| {
+                        match remote_str(d, "controller_label") {
+                            Some(Some(name)) => format!("{node}/{name}"),
+                            // The owner named no controller, or named nothing.
+                            // The by-id tail still beats the full peer path.
+                            _ => {
+                                let tail = controller_port
+                                    .as_deref()
+                                    .unwrap_or(&d.canonical)
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or_default();
+                                format!("{node} {tail}")
+                            }
+                        }
+                    }),
                     port: d.ser2net_port,
                     // Only modes that could actually be selected: see
                     // `boot_modes_for_at`. Offering a controller's menu on a
@@ -749,7 +802,15 @@ impl Dash {
                     // correction that stopped one board reporting another's
                     // power locally, applied across the fleet.
                     controller_port: controller_port.clone(),
-                    controller_label: controller_row.and_then(|c| c.nickname.clone()),
+                    // A peer's controller is named by its owner. The local
+                    // lookup below is gated on `d.node.is_none()` because the
+                    // controller's row lives on the owning node and is never
+                    // imported here, so for a peer's board it always found
+                    // nothing and the panel read "board controller".
+                    controller_label: match remote_str(d, "controller_label") {
+                        Some(name) => name,
+                        None => controller_row.and_then(|c| c.nickname.clone()),
+                    },
                     controller_tags: controller_row.map(|c| c.tags.clone()).unwrap_or_default(),
                     is_controller: self.config.controller_profile_of(&d.canonical).is_some(),
                     is_file: d.canonical.starts_with("file:"),

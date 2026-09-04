@@ -1252,6 +1252,8 @@ fn dash_console(canonical: &str, controller_port: &str) -> conminer::dash::DashD
         // §P1: a local device, which is what every pre-fleet test means.
         node: None,
         node_host: None,
+        // A local chassis is headed by its own key, so no override.
+        adapter_label: None,
         // Plugged in: these fixtures model a bench with the cable in.
         present: true,
         device: canonical.into(),

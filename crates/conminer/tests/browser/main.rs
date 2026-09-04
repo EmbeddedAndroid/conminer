@@ -283,6 +283,63 @@ impl Rig {
         Self::start_inner(devices, false)
     }
 
+    /// A board held on a PEER's behalf: no topology of our own, and the owner's
+    /// answer about how it is driven carried verbatim, exactly as inventory
+    /// sync leaves it.
+    fn start_peer_board(
+        node: &str,
+        controller: &str,
+        label: Option<&str>,
+        remotes: &[&str],
+    ) -> Self {
+        let rig = Self::start_inner(&[], true);
+        {
+            let mut reg = Registry::open(rig._dir.path()).unwrap();
+            conminer_core::peers::registry::upsert_advert(
+                &mut reg,
+                &conminer_core::peers::registry::Advert {
+                    instance_id: format!("id-{node}"),
+                    name: node.into(),
+                    version: "0.2.0".into(),
+                    mcp_url: "http://192.168.10.10:8090/mcp".into(),
+                    dash_url: "http://192.168.10.10:8080".into(),
+                    ser2net_host: "192.168.10.10".into(),
+                    ser2net_ports: vec![],
+                },
+                conminer_core::peers::registry::PeerSource::Static,
+                Some("192.168.10.10"),
+                0,
+            )
+            .unwrap();
+            let mut controls = serde_json::json!({
+                "controller": "bantam",
+                "controller_port": controller,
+                "boot_modes": [],
+                "has_power_hook": true,
+            });
+            if let Some(l) = label {
+                controls["controller_label"] = serde_json::json!(l);
+            }
+            for (i, remote) in remotes.iter().enumerate() {
+                let row = reg
+                    .upsert_device(
+                        &format!("peer:{node}/{remote}"),
+                        None,
+                        IdentityKind::ById,
+                        None,
+                        1_000,
+                    )
+                    .unwrap();
+                reg.set_remote_origin(row.id, node, Some("192.168.10.10"), remote, Some(5001))
+                    .unwrap();
+                reg.assign_port(row.id, 6200 + i as u16).unwrap();
+                reg.set_state(row.id, "listening").unwrap();
+                reg.set_remote_controls(row.id, Some(&controls)).unwrap();
+            }
+        }
+        rig
+    }
+
     /// Pull the cable, the way discovery records it.
     fn unplug(&self, canonical: &str) {
         let mut reg = Registry::open(self._dir.path()).unwrap();
@@ -2133,5 +2190,131 @@ fn the_page_shows_only_hardware_that_is_on_the_bus() {
         !body.contains("Bantam_RRD"),
         "nor the controller that drove it:\n{}",
         &body[..body.len().min(3000)]
+    );
+}
+
+/// The chassis headings the page actually drew, in order.
+///
+/// Counting `class="adapter` would also count `adapter-head`, `-led`, `-name`
+/// and `-sub`, so one chassis reads as five. The heading text is what a person
+/// looks at, so that is what these gates assert on.
+fn chassis_headings(body: &str) -> Vec<String> {
+    body.split("class=\"adapter-name\"")
+        .skip(1)
+        .filter_map(|rest| {
+            let open = rest.find('>')? + 1;
+            let end = rest[open..].find("</span>")? + open;
+            Some(rest[open..end].to_string())
+        })
+        .collect()
+}
+
+/// A peer's board must not be drawn as two nameless chassis.
+///
+/// Rendered in a real browser, because this is a bug you can only see by
+/// looking at the page. The owner drew its board as ONE chassis with the ports
+/// named and the controller labelled; its peer drew the same hardware as two
+/// chassis headed by raw by-id paths with no controller name anywhere, because
+/// a peer's row has no local `by_path` to group by and the controller's own row
+/// is deliberately never imported.
+#[test]
+fn a_peers_board_renders_as_one_named_chassis_not_two_raw_ones() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium in this image");
+        return;
+    };
+    // One board, two chips, one controller.
+    let rig = Rig::start_peer_board(
+        "alpha",
+        "/dev/serial/by-id/usb-Microchip_Bantam_CTRL0001-if00",
+        Some("BOARD-A"),
+        &[
+            "/dev/serial/by-id/usb-FTDI_RIDE_UART_AAAA-if00-port0",
+            "/dev/serial/by-id/usb-FTDI_RIDE_UART_AAAA-if01-port0",
+            "/dev/serial/by-id/usb-FTDI_RIDE_SPI_BBBB-if00-port0",
+        ],
+    );
+    rig.until_api("the peer's board", |s| s.contains("alpha"));
+
+    let dom = render(&bin, &format!("{}/?nostream=1", rig.base));
+    let body = strip_scripts(&dom);
+
+    let heads = chassis_headings(&body);
+    assert_eq!(
+        heads.len(),
+        1,
+        "one board is one chassis, however many chips it has; drew {heads:?}"
+    );
+    assert_eq!(
+        heads[0], "alpha/BOARD-A",
+        "the chassis must be headed by the owner's name for its controller"
+    );
+}
+
+/// A peer's controller is NAMED, but not renameable from here.
+///
+/// The label chip writes to the local registry, and a peer's controller has no
+/// row here: naming it would create a label that resolves to nothing. So the
+/// name is shown read-only; without it the panel reads "board controller" on
+/// every node but its owner.
+#[test]
+fn a_peers_controller_shows_its_name_without_offering_to_rename_it() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium in this image");
+        return;
+    };
+    let rig = Rig::start_peer_board(
+        "alpha",
+        "/dev/serial/by-id/usb-Microchip_Bantam_CTRL0001-if00",
+        Some("BOARD-A"),
+        &["/dev/serial/by-id/usb-FTDI_RIDE_UART_AAAA-if00-port0"],
+    );
+    rig.until_api("the peer's board", |s| s.contains("alpha"));
+
+    let dom = render(&bin, &format!("{}/?nostream=1", rig.base));
+    let body = strip_scripts(&dom);
+    assert!(
+        body.contains("ctl-owned-label") && body.contains("BOARD-A"),
+        "the owner's controller name must be on the page:\n{}",
+        &body[..body.len().min(2000)]
+    );
+    // The editable chip belongs to rows we own. Its absence here is the point.
+    let ctl_panel = body.split("class=\"ctl-head").nth(1).unwrap_or("");
+    let ctl_panel = &ctl_panel[..ctl_panel.len().min(600)];
+    assert!(
+        !ctl_panel.contains("label-chip"),
+        "a peer's controller must not offer a rename that resolves to nothing:\n{ctl_panel}"
+    );
+}
+
+/// An owner that never named its controller still gets a readable chassis.
+///
+/// The fallback must not go back to the full peer path: the by-id tail is
+/// short, stable, and already how the bench talks about a chip.
+#[test]
+fn an_unnamed_peer_controller_still_beats_a_raw_peer_path() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium in this image");
+        return;
+    };
+    let rig = Rig::start_peer_board(
+        "alpha",
+        "/dev/serial/by-id/usb-Microchip_Bantam_CTRL0001-if00",
+        None,
+        &["/dev/serial/by-id/usb-FTDI_RIDE_UART_AAAA-if00-port0"],
+    );
+    rig.until_api("the peer's board", |s| s.contains("alpha"));
+
+    let dom = render(&bin, &format!("{}/?nostream=1", rig.base));
+    let body = strip_scripts(&dom);
+    let heads = chassis_headings(&body);
+    assert_eq!(
+        heads,
+        vec!["alpha usb-Microchip_Bantam_CTRL0001-if00".to_string()],
+        "an unnamed controller is headed by its node and the by-id tail, never \
+         by the full peer path"
     );
 }

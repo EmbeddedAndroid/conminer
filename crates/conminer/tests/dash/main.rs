@@ -2399,6 +2399,8 @@ fn console(
         // §P1: a local device, which is what every pre-fleet test means.
         node: None,
         node_host: None,
+        // A local chassis is headed by its own key, so no override.
+        adapter_label: None,
         // Plugged in: these fixtures model a bench with the cable in.
         present: true,
         device: canonical.into(),
@@ -4036,4 +4038,146 @@ fn a_remote_console_reads_its_relay_not_the_empty_broker() {
         0,
         "a remote console must read its relay directly, never subscribe the broker"
     );
+}
+
+/// A peer's board is ONE chassis, headed by the name its owner gives it.
+///
+/// `topology_group` needs `by_path`, the cable's position on THIS host, and a
+/// row held on a peer's behalf has none. So the adapter key fell through to
+/// `adapter_of`, a textual split at `-ifNN` of the peer id, and two things broke
+/// at once: the chassis was headed by a raw by-id path, and a board whose ports
+/// live on two FTDI chips split into two chassis, because only the topology
+/// knows they are one board.
+///
+/// The owner drew the board as one chassis of seven named ports, while its peer
+/// drew the SAME hardware as two chassis, one per FTDI chip, with four ports
+/// and two, and no controller name anywhere. The owner already says which
+/// controller INSTANCE drives each
+/// console, and one controller is one board.
+#[test]
+fn a_peers_two_chip_board_is_one_chassis_named_by_its_owner() {
+    const CTL: &str = "/dev/serial/by-id/usb-Microchip_Bantam_CTRL0001-if00";
+    let rig = Rig::start(cfg());
+    rig.add_device("usb-FTDI_Local-if00-port0", Some(5001));
+    {
+        let mut reg = rig.registry();
+        conminer_core::peers::registry::upsert_advert(
+            &mut reg,
+            &conminer_core::peers::registry::Advert {
+                instance_id: "id-alpha".into(),
+                name: "alpha".into(),
+                version: "0.2.0".into(),
+                mcp_url: "http://192.168.10.10:8090/mcp".into(),
+                dash_url: "http://192.168.10.10:8080".into(),
+                ser2net_host: "192.168.10.10".into(),
+                ser2net_ports: vec![],
+            },
+            conminer_core::peers::registry::PeerSource::Static,
+            Some("192.168.10.10"),
+            0,
+        )
+        .unwrap();
+        // One board, two chips, one controller.
+        for (i, remote) in [
+            "/dev/serial/by-id/usb-FTDI_RIDE_UART_AAAA-if00-port0",
+            "/dev/serial/by-id/usb-FTDI_RIDE_UART_AAAA-if01-port0",
+            "/dev/serial/by-id/usb-FTDI_RIDE_SPI_BBBB-if00-port0",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let row = reg
+                .upsert_device(
+                    &format!("peer:alpha/{remote}"),
+                    None,
+                    conminer_core::store::IdentityKind::ById,
+                    None,
+                    0,
+                )
+                .unwrap();
+            reg.set_remote_origin(row.id, "alpha", Some("192.168.10.10"), remote, Some(5001))
+                .unwrap();
+            reg.assign_port(row.id, 5010 + i as u16).unwrap();
+            reg.set_state(row.id, "listening").unwrap();
+            // What the owner said about driving it, carried verbatim.
+            reg.set_remote_controls(
+                row.id,
+                Some(&serde_json::json!({
+                    "controller": "bantam",
+                    "controller_port": CTL,
+                    "controller_label": "BOARD-A",
+                    "boot_modes": [],
+                    "has_power_hook": true,
+                })),
+            )
+            .unwrap();
+        }
+    }
+
+    let v = rig.until("the remote board", |v| {
+        v["devices"]
+            .as_array()
+            .map(|d| d.iter().any(|x| x["node"] == "alpha"))
+            .unwrap_or(false)
+    });
+    let remote: Vec<&serde_json::Value> = v["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["node"] == "alpha")
+        .collect();
+    assert_eq!(
+        remote.len(),
+        3,
+        "the fixture must have all three ports: {v}"
+    );
+
+    let keys: std::collections::BTreeSet<&str> = remote
+        .iter()
+        .filter_map(|x| x["adapter"].as_str())
+        .collect();
+    assert_eq!(
+        keys.len(),
+        1,
+        "one board is one chassis: two chips must not split into two groups, got {keys:?}"
+    );
+    let key = keys.iter().next().unwrap();
+    assert!(
+        key.contains(CTL),
+        "and the group is the controller INSTANCE the owner named: {key:?}"
+    );
+
+    for x in &remote {
+        assert_eq!(
+            x["adapter_label"], "alpha/BOARD-A",
+            "the chassis is headed by the owner's name for its controller: {x}"
+        );
+        assert_eq!(
+            x["controller_label"], "BOARD-A",
+            "and the controller panel says what the owner calls it: {x}"
+        );
+    }
+}
+
+/// The local bench must render exactly as it did before.
+///
+/// The label override exists only for a row whose key is somebody else's
+/// controller path. A local chassis prettifies its own key, and setting a label
+/// for it would put a second name on the thing the page already names.
+#[test]
+fn a_local_chassis_carries_no_label_override() {
+    let rig = Rig::start(cfg());
+    rig.add_device("usb-FTDI_Quad_UART-SPI_SN000002-if00-port0", Some(5001));
+    let v = rig.until("the local board", |v| {
+        v["devices"]
+            .as_array()
+            .map(|d| !d.is_empty())
+            .unwrap_or(false)
+    });
+    for d in v["devices"].as_array().unwrap() {
+        assert!(
+            d["adapter_label"].is_null(),
+            "a local chassis names itself from its own key: {d}"
+        );
+    }
 }
