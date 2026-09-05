@@ -3000,3 +3000,74 @@ fn an_unplugged_self_driving_controller_offers_no_hook_but_a_dead_console_still_
          still plugged in: {dead}"
     );
 }
+
+/// The guidance promises a flash preview; the schema rejected one.
+///
+/// `handler.rs` tells every agent that `dry_run: true` on power/boot_mode/flash
+/// shows the exact hook argv and changes nothing, and flash's call body has
+/// always honoured it: it plans, reports a missing lease rather than refusing,
+/// and returns the argv without running the hook or opening a provisioning span.
+/// The schema simply never declared the argument, and `additionalProperties:
+/// false` turns an undeclared argument into INVALID_ARGUMENT -- so the preview
+/// of the single most destructive hook on the rig was unreachable, and the
+/// promise was one an agent could only discover was false by trying it.
+#[test]
+fn every_tool_the_guidance_promises_a_dry_run_for_accepts_one() {
+    // Read the promise as SHIPPED rather than restating it here: if the
+    // sentence is reworded to cover another tool, this gate follows it instead
+    // of quietly going out of date.
+    let instructions = include_str!("../../../conminer-mcp/src/handler.rs");
+    let claim = instructions
+        .split("`dry_run: true` on ")
+        .nth(1)
+        .expect("the guidance must still promise a dry run somewhere");
+    let promised: Vec<&str> = claim
+        .split_whitespace()
+        .next()
+        .expect("the tools it names")
+        .split('/')
+        .filter(|t| !t.is_empty())
+        .collect();
+    assert!(
+        promised.contains(&"flash"),
+        "this gate exists because flash was promised one: {promised:?}"
+    );
+
+    let rig = Rig::new();
+    for tool in promised {
+        let schema = rig.call("help", json!({"tool": tool}));
+        let input = &schema["inputSchema"];
+        assert!(
+            input["properties"].get("dry_run").is_some(),
+            "the shared guidance promises dry_run on {tool}, so {tool} must declare it: {input}"
+        );
+        // A strict schema is exactly what makes an undeclared argument fatal
+        // rather than ignored, which is why the promise could not be kept.
+        assert_eq!(
+            input["additionalProperties"], false,
+            "{tool} is strict, so an undeclared dry_run would be refused outright: {input}"
+        );
+    }
+}
+
+/// And the promise is not merely declared: it is accepted and it plans.
+#[test]
+fn a_flash_dry_run_is_accepted_and_runs_no_hook() {
+    let rig = Rig::new();
+    let (device, _) = rig.ingest("boot.log", "hello\n", None);
+    // No flash hook is configured for this fixture, so a dry run must fail on
+    // THAT and not on the argument being unknown. Either way it must never
+    // reach an INVALID_ARGUMENT for `dry_run` itself.
+    let e = rig.err(
+        "flash",
+        json!({"device": device, "image": "x.img", "dry_run": true}),
+    );
+    assert_ne!(
+        e["code"], "INVALID_ARGUMENT",
+        "a flash preview must be a legal call: {e}"
+    );
+    assert_eq!(
+        e["code"], "HOOK_NOT_CONFIGURED",
+        "and it must get as far as looking for the hook: {e}"
+    );
+}

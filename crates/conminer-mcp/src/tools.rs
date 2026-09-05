@@ -4622,7 +4622,19 @@ pub fn registry() -> &'static [Tool] {
                     "image": {"type": "string", "description": "Image reference passed to the hook."},
                     "git_sha": {"type": "string"},
                     "image_hash": {"type": "string"},
-                    "name": {"type": "string"}
+                    "name": {"type": "string"},
+                    // §F5. The call body has ALWAYS honoured this: it plans, it
+                    // reports a missing lease instead of refusing, and it
+                    // returns the hook argv without running it or opening a
+                    // provisioning span. Only the schema omitted it, and
+                    // `additionalProperties: false` turns an undeclared argument
+                    // into INVALID_ARGUMENT -- so the shared guidance promised a
+                    // preview of the most destructive hook on the rig while the
+                    // strict argument check rejected every attempt to use one,
+                    // and the implementation behind it was unreachable.
+                    "dry_run": {"type": "boolean", "description":
+                        "Validate everything and show the exact hook argv WITHOUT running it, \
+                         opening a provisioning span, or binding an image."}
                 },
                 "additionalProperties": false
             }),
