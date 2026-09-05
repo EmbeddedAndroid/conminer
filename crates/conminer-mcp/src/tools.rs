@@ -3839,22 +3839,18 @@ pub fn registry() -> &'static [Tool] {
                 // another, in the same response -- reported from the bench as a
                 // state inconsistency, and it is one. The probe is the fresher
                 // witness, and it is this tool's whole reason for existing.
-                let stale_capture = {
-                    // The column minerd owns, now that presence and capture
-                    // health are no longer the same field.
-                    let stored = d.capture_state.as_deref().unwrap_or(d.state.as_str());
-                    let clean = probe.as_ref().is_some_and(|p| {
-                        p["connected"] == true
-                            && p["open_failed"] != true
-                            && p["error"].is_null()
-                    });
-                    if clean && matches!(stored, "open_failed" | "away_in_edl") {
-                        json!(format!(
-                            "capture_state says {stored:?}, but this probe connected and read                              cleanly just now: minerd has not re-attached yet. It re-dials a                              failed console periodically, so this should correct itself; the                              probe is the fresher witness either way"
-                        ))
-                    } else {
-                        Value::Null
-                    }
+                let stale_capture = match capture_state_is_stale(
+                    d.capture_state.as_deref().unwrap_or(d.state.as_str()),
+                    probe.as_ref(),
+                    edl,
+                ) {
+                    Some(stored) => json!(format!(
+                        "capture_state says {stored:?}, but this probe connected and read bytes \
+                         just now: minerd has not re-attached yet. It re-dials a failed console \
+                         periodically, so this should correct itself; the probe is the fresher \
+                         witness either way"
+                    )),
+                    None => Value::Null,
                 };
 
                 let verdict = console_verdict(
@@ -7561,6 +7557,49 @@ fn search_across(
         );
     }
     Ok(payload)
+}
+
+/// Is the stored capture state contradicted by what this probe just saw?
+///
+/// Returns the stored state when it should be called stale, so the caller can
+/// name it. Pure, because the shape that matters is a combination of four
+/// facts and every one of them has to be tried: an integration test against a
+/// socket can only produce whichever shape the timing happens to give it, and
+/// an idle connection legitimately reports either "no error" or "timed out".
+///
+/// Two rules.
+///
+/// A probe that saw NOTHING proves nothing. This hint exists for a console that
+/// RECOVERED while minerd sat idle, and recovery is proven by bytes arriving.
+/// The test was `connected && !open_failed && error.is_null()`, which a probe
+/// that connects, reads zero bytes and returns no error also passes -- so a
+/// board sitting in EDL was told minerd had failed to re-attach. Whether
+/// an agent saw that came down to which way an empty read returned, since the
+/// identical probe with `error="timed out"` stayed silent.
+///
+/// And never call a state stale that this same call just confirmed. A
+/// board-scoped EDL detection corroborates `away_in_edl`: capture is parked
+/// because the UART re-enumerated away, which is the design. Where bytes really
+/// are flowing during EDL, `verdict` reports that divergence in terms of what is
+/// actually wrong rather than blaming a re-attach that is not owed.
+pub fn capture_state_is_stale<'a>(
+    stored: &'a str,
+    probe: Option<&Value>,
+    edl: bool,
+) -> Option<&'a str> {
+    if !matches!(stored, "open_failed" | "away_in_edl") {
+        return None;
+    }
+    if edl && stored == "away_in_edl" {
+        return None;
+    }
+    let p = probe?;
+    let read_something = p["bytes_received"].as_u64().unwrap_or(0) > 0;
+    let clean = read_something
+        && p["connected"] == true
+        && p["open_failed"] != true
+        && p["error"].is_null();
+    clean.then_some(stored)
 }
 
 fn probe_power_state(ctx: &Context, d: &DeviceRow) -> Option<String> {

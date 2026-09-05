@@ -3071,3 +3071,72 @@ fn a_flash_dry_run_is_accepted_and_runs_no_hook() {
         "and it must get as far as looking for the hook: {e}"
     );
 }
+
+/// Every shape an empty probe can take, and what may be said about it.
+///
+/// Table-driven because the bug lived in a combination of four facts, and an
+/// integration test can only produce whichever shape the timing gives it: an
+/// idle connection legitimately reports either "no error" or "timed out", and
+/// in the second shape the OLD code was silent too, so a socket test could pass
+/// against the bug and prove nothing. Worse, a first attempt at that test sat in
+/// the actuation suite, whose USB fixture is a process-wide environment
+/// variable, and it read another test's bus.
+#[test]
+fn what_an_empty_probe_permits_diagnose_to_say_about_capture() {
+    use conminer_mcp::tools::capture_state_is_stale;
+    let probe = |bytes: u64, err: Value| {
+        json!({"connected": true, "open_failed": false,
+               "bytes_received": bytes, "error": err})
+    };
+
+    // The reported shape: in EDL, connected, nothing read, no error. The board
+    // is exactly where it is supposed to be and capture is parked by design.
+    assert_eq!(
+        capture_state_is_stale("away_in_edl", Some(&probe(0, Value::Null)), true),
+        None,
+        "a board in EDL that says nothing is not a console minerd has abandoned"
+    );
+    // The same probe that happened to time out instead. It always stayed
+    // silent, and the two must not disagree.
+    assert_eq!(
+        capture_state_is_stale("away_in_edl", Some(&probe(0, json!("timed out"))), true),
+        None,
+        "how an empty read returns must not decide what diagnose claims"
+    );
+    // Not in EDL, nothing read: still no evidence the console came back.
+    assert_eq!(
+        capture_state_is_stale("open_failed", Some(&probe(0, Value::Null)), false),
+        None,
+        "silence is not recovery"
+    );
+
+    // What the hint is for, and it must still fire: the console delivered bytes
+    // while the registry still carried the fault minerd last saw.
+    assert_eq!(
+        capture_state_is_stale("open_failed", Some(&probe(64, Value::Null)), false),
+        Some("open_failed"),
+        "a probe that READ something is the fresher witness, and that is the \
+         whole reason this hint exists"
+    );
+    // Bytes during away_in_edl with no EDL detected is also a real divergence.
+    assert_eq!(
+        capture_state_is_stale("away_in_edl", Some(&probe(64, Value::Null)), false),
+        Some("away_in_edl"),
+        "nothing corroborates the stored state here, and the console is talking"
+    );
+    // ...but with EDL confirmed, the divergence is reported by `verdict`
+    // instead, which names what is wrong rather than blaming a re-attach.
+    assert_eq!(
+        capture_state_is_stale("away_in_edl", Some(&probe(64, Value::Null)), true),
+        None,
+        "this call's own EDL finding confirms the stored state"
+    );
+
+    // No probe at all: say nothing rather than guess.
+    assert_eq!(capture_state_is_stale("open_failed", None, false), None);
+    // A healthy console is never dropped on this hint.
+    assert_eq!(
+        capture_state_is_stale("streaming", Some(&probe(64, Value::Null)), false),
+        None
+    );
+}
