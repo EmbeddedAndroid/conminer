@@ -1155,6 +1155,104 @@ fn is_device_open_failure(line: &str) -> bool {
         || l.contains("could not open device")
 }
 
+/// Every device path the generated config actually serves.
+///
+/// `managed_consoles` yields ser2net's connection KEYS, which is what its log
+/// messages name; this wants the raw paths, because that is what a lock file is
+/// named after.
+fn configured_devices(config_text: &str) -> Vec<String> {
+    config_text
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("connector: serialdev,"))
+        .filter_map(|rest| rest.split(',').next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The UUCP lock names ser2net consults before opening one device.
+///
+/// Two shapes, and both have to go: the path form, `/dev/serial/by-id/usb-X` ->
+/// `LCK..serial_by-id_usb-X`, and the device-number form `LCK.<major>.<minor>`
+/// taken from the tty the by-id symlink resolves to, for example
+/// `LCK..serial_by-id_usb-FTDI_Quad_UART_...-if00-port0` beside
+/// `LCK.188.000`. The major is emitted padded and unpadded because that padding
+/// is a build-time detail of the gensio in the image, not something to guess at.
+fn uucp_lock_names(dev: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(rel) = dev.strip_prefix("/dev/") {
+        out.push(format!("LCK..{}", rel.replace('/', "_")));
+    }
+    // Follows the symlink on purpose: the lock is on the tty's device numbers,
+    // not on the stable name pointing at it.
+    if let Ok(md) = std::fs::metadata(dev) {
+        use std::os::unix::fs::MetadataExt;
+        let rdev = md.rdev();
+        let (maj, min) = (libc::major(rdev), libc::minor(rdev));
+        out.push(format!("LCK.{maj:03}.{min:03}"));
+        out.push(format!("LCK.{maj}.{min:03}"));
+    }
+    out
+}
+
+/// Where UUCP locks live. `/var/lock` is a symlink to `/run/lock` on Debian, so
+/// these are usually one directory; sweeping both costs nothing and covers an
+/// image where they are not.
+fn lock_dirs() -> Vec<PathBuf> {
+    match std::env::var("CONMINER_SER2NET_LOCK_DIR") {
+        Ok(d) if !d.is_empty() => vec![PathBuf::from(d)],
+        _ => vec![PathBuf::from("/run/lock"), PathBuf::from("/var/lock")],
+    }
+}
+
+/// Drop the UUCP locks for the devices we are about to serve.
+///
+/// A lock naming a live PID is not necessarily a live lock.
+///
+/// ser2net writes one of these per device and does not always clean them up
+/// when it is killed. They are ordinary files in the container's writable layer
+/// (`/run/lock` is overlay here, not tmpfs), so a container that is RESTARTED
+/// rather than recreated carries them into the next ser2net. That next ser2net
+/// is pid 16, because a fresh pid namespace hands out the same low pid every
+/// time, and the stale lock it finds also says pid 16. Its staleness check asks
+/// whether that pid is alive, finds that it is, and concludes the device is in
+/// use: by itself.
+///
+/// Seen after a host reboot: locks dated four days earlier, all naming pid 16,
+/// and every one of the node's consoles pinned at `open_failed`
+/// with ser2net logging "Port in use by pid 16" thousands of times. The
+/// supervisor then restarted it five times, hit the identical lock every time,
+/// and gave up reporting "something outside conminer is holding the tty" while
+/// the thing holding it was conminer's own residue.
+///
+/// This runs immediately before every spawn, which is the moment the question
+/// has an unambiguous answer: ser2net is not running, and inside this container
+/// nothing else opens these ttys, so any lock naming a device WE serve is
+/// residue by construction. Locks for devices we do not serve are left strictly
+/// alone, because those may belong to something real.
+fn clear_stale_device_locks(config_text: &str, dirs: &[PathBuf]) -> Vec<String> {
+    let mut cleared = Vec::new();
+    for dev in configured_devices(config_text) {
+        for name in uucp_lock_names(&dev) {
+            for dir in dirs {
+                let path = dir.join(&name);
+                if !path.exists() {
+                    continue;
+                }
+                match std::fs::remove_file(&path) {
+                    Ok(()) => cleared.push(path.display().to_string()),
+                    // Not fatal: a lock we cannot remove is reported by ser2net
+                    // as a failed open, which is the behaviour we already have.
+                    Err(e) => tracing::warn!(
+                        path = %path.display(), error = %e,
+                        "could not clear a stale device lock"
+                    ),
+                }
+            }
+        }
+    }
+    cleared
+}
+
 fn spawn_ser2net(binary: &str, cfg: &Path) -> Result<tokio::process::Child> {
     spawn_ser2net_watched(binary, cfg, None)
 }
@@ -1182,6 +1280,18 @@ fn spawn_ser2net_logged(
     failures: Option<OpenFailureLog>,
 ) -> Result<tokio::process::Child> {
     use std::process::Stdio;
+    // Every spawn and every restart comes through here, which is the one place
+    // that knows ser2net is not running yet. See `clear_stale_device_locks`.
+    if let Ok(text) = std::fs::read_to_string(cfg) {
+        let cleared = clear_stale_device_locks(&text, &lock_dirs());
+        if !cleared.is_empty() {
+            tracing::warn!(
+                count = cleared.len(),
+                locks = ?cleared,
+                "cleared stale device locks left by a previous ser2net"
+            );
+        }
+    }
     let mut child = tokio::process::Command::new(binary)
         // -n: stay in the foreground so the supervisor owns the lifecycle.
         // -d: log to stderr. Without it ser2net's own diagnostics go nowhere,
@@ -1864,5 +1974,118 @@ mod ser2net_restart_tests {
             open_failure_worth_a_restart(&[], &managed(true, true)),
             "no captured line at all must behave as it did before"
         );
+    }
+}
+
+#[cfg(test)]
+mod ser2net_lock_tests {
+    use super::*;
+
+    /// Two connections, one on a stable by-id name and one on a device that
+    /// really exists in the test container, so the device-number form can be
+    /// derived for real rather than guessed at.
+    const CFG: &str = "\
+connection: &a
+  accepter: telnet(rfc2217=false),tcp,0.0.0.0,5001
+  connector: serialdev,/dev/serial/by-id/usb-FTDI_X-if00-port0,115200n81,local
+connection: &b
+  accepter: telnet(rfc2217=false),tcp,0.0.0.0,5002
+  connector: serialdev,/dev/null,115200n81,local
+";
+
+    #[test]
+    fn the_devices_swept_are_the_paths_ser2net_opens() {
+        let devs = configured_devices(CFG);
+        assert_eq!(
+            devs,
+            vec![
+                "/dev/serial/by-id/usb-FTDI_X-if00-port0".to_string(),
+                "/dev/null".to_string()
+            ],
+            "the sweep works on device PATHS; managed_consoles yields ser2net's \
+             connection keys, which are a different thing"
+        );
+    }
+
+    #[test]
+    fn a_lock_is_named_after_the_path_and_the_tty_behind_it() {
+        // /dev/null is 1:3 on every Linux, so this pins the device-number form
+        // against a real device instead of a fabricated rdev.
+        let names = uucp_lock_names("/dev/null");
+        assert!(
+            names.contains(&"LCK..null".to_string()),
+            "the path form must be there: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "LCK.1.003" || n == "LCK.001.003"),
+            "and the device-number form, padded or not: {names:?}"
+        );
+    }
+
+    /// The regression. A lock naming a LIVE pid was still residue.
+    ///
+    /// ser2net does not always clean these up when killed, and `/run/lock` in
+    /// the container is the writable overlay rather than tmpfs, so a container
+    /// that is restarted instead of recreated carries them forward. The next
+    /// ser2net is pid 16, because a fresh pid namespace hands out the same low
+    /// pid every time, and the lock it finds says pid 16 as well. Any liveness
+    /// check answers "that pid is alive" and it is right: the pid is the asker.
+    ///
+    /// Seen after a host reboot: locks four days old, all naming pid 16, every
+    /// console pinned at open_failed, and the supervisor giving
+    /// up after five restarts with "something outside conminer is holding the
+    /// tty" while the holder was its own residue.
+    #[test]
+    fn a_stale_lock_naming_a_live_pid_is_still_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = dir.path().join("LCK..serial_by-id_usb-FTDI_X-if00-port0");
+        // A pid that is unambiguously alive: this test process.
+        std::fs::write(&ours, format!("{:>10}\n", std::process::id())).unwrap();
+
+        let cleared = clear_stale_device_locks(CFG, &[dir.path().to_path_buf()]);
+
+        assert!(
+            !ours.exists(),
+            "a lock for a device we are about to serve is residue whatever pid \
+             it names, because ser2net is not running yet: {cleared:?}"
+        );
+        assert!(
+            cleared
+                .iter()
+                .any(|c| c.ends_with("LCK..serial_by-id_usb-FTDI_X-if00-port0")),
+            "and the sweep must report what it removed: {cleared:?}"
+        );
+    }
+
+    /// The other half: this must not become a lock reaper.
+    ///
+    /// A lock for a device this ser2net does not serve may belong to something
+    /// real on the host, and removing it would hand two writers one tty.
+    #[test]
+    fn a_lock_for_a_device_we_do_not_serve_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = dir.path().join("LCK..ttyS0");
+        std::fs::write(&theirs, "        99\n").unwrap();
+        let other_by_id = dir
+            .path()
+            .join("LCK..serial_by-id_usb-SomeoneElse-if00-port0");
+        std::fs::write(&other_by_id, "        99\n").unwrap();
+
+        let cleared = clear_stale_device_locks(CFG, &[dir.path().to_path_buf()]);
+
+        assert!(
+            theirs.exists(),
+            "someone else's tty lock must survive: {cleared:?}"
+        );
+        assert!(
+            other_by_id.exists(),
+            "including a by-id lock for a console we do not serve: {cleared:?}"
+        );
+    }
+
+    #[test]
+    fn sweeping_an_empty_lock_dir_is_quiet_and_harmless() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(clear_stale_device_locks(CFG, &[dir.path().to_path_buf()]).is_empty());
     }
 }

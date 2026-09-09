@@ -87,6 +87,15 @@ services:
       - ./conminer.toml:/etc/conminer/conminer.toml:ro
       - ./selftest.toml:/etc/conminer/selftest.toml:ro
       - /dev:/dev
+    # /run is supposed to be ephemeral, and in this image it is not: it lives in
+    # the container's writable layer, so ser2net's UUCP lock files survive a
+    # container RESTART (a host reboot, say) even though the process that wrote
+    # them is long gone. The next ser2net then finds a lock naming pid 16 and is
+    # itself pid 16, so it refuses to open the device as "in use". The supervisor
+    # clears these before every spawn; making the directory a tmpfs means they
+    # cannot reach it in the first place.
+    tmpfs:
+      - /run/lock
     device_cgroup_rules:
       - 'c 188:* rmw'
       - 'c 166:* rmw'

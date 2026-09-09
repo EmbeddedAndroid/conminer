@@ -828,3 +828,29 @@ fn deploying_stamps_the_build_fingerprint_it_was_built_with() {
         "an unstamped build must be obviously unstamped"
     );
 }
+
+/// ser2net's lock directory must be ephemeral.
+///
+/// `/run/lock` in this image is the container's writable layer, not a tmpfs, so
+/// a UUCP lock written by one ser2net outlives it and is still there when the
+/// container is RESTARTED rather than recreated. Seen after a host reboot:
+/// locks four days old naming pid 16, a fresh ser2net that was
+/// also pid 16, and every console pinned at open_failed because the lock looked
+/// live. The supervisor clears them before each spawn; this keeps them from
+/// being persisted at all, which is what `/run` is for.
+#[test]
+fn the_ser2net_lock_directory_is_a_tmpfs() {
+    let compose = include_str!("../../../../docker-compose.yaml");
+    let svc = compose
+        .split("  ser2net:")
+        .nth(1)
+        .expect("the ser2net service")
+        .split("\n  minerd:")
+        .next()
+        .expect("the end of it");
+    assert!(
+        svc.contains("tmpfs:") && svc.contains("/run/lock"),
+        "ser2net must mount /run/lock as a tmpfs so a lock cannot outlive the \
+         process that wrote it:\n{svc}"
+    );
+}
