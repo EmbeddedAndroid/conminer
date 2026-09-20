@@ -1254,6 +1254,8 @@ fn dash_console(canonical: &str, controller_port: &str) -> conminer::dash::DashD
         node_host: None,
         // A local chassis is headed by its own key, so no override.
         adapter_label: None,
+        // No sweep has asked this fixture's controller anything.
+        boot_overrides: None,
         // Plugged in: these fixtures model a bench with the cable in.
         present: true,
         device: canonical.into(),

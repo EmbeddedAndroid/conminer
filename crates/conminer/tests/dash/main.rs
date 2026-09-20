@@ -2421,6 +2421,8 @@ fn console(
         node_host: None,
         // A local chassis is headed by its own key, so no override.
         adapter_label: None,
+        // No sweep has asked this fixture's controller anything.
+        boot_overrides: None,
         // Plugged in: these fixtures model a bench with the cable in.
         present: true,
         device: canonical.into(),
@@ -3045,6 +3047,16 @@ struct FakeMcp {
 
 impl FakeMcp {
     fn start(device: &str) -> Self {
+        Self::start_answering(device, Default::default())
+    }
+
+    /// As `start`, but answering named tools with a given `structuredContent`
+    /// (and `isError` when that content carries an `error`), so a test can put
+    /// words in mcpd's mouth and watch what dashd does with them.
+    fn start_answering(
+        device: &str,
+        answers: std::collections::HashMap<String, serde_json::Value>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let calls: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
@@ -3064,11 +3076,20 @@ impl FakeMcp {
                         seen.lock().unwrap().push((name, args));
                     }
                 }
-                let payload = serde_json::json!({
-                    "jsonrpc": "2.0", "id": 1,
-                    "result": {"isError": false,
-                               "structuredContent": {"device": dev, "ok": true}},
-                })
+                let last = seen.lock().unwrap().last().map(|(n, _)| n.clone());
+                let canned = last.and_then(|n| answers.get(&n).cloned());
+                let payload = match canned {
+                    Some(content) => serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": {"isError": content.get("error").is_some(),
+                                   "structuredContent": content},
+                    }),
+                    None => serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": {"isError": false,
+                                   "structuredContent": {"device": dev, "ok": true}},
+                    }),
+                }
                 .to_string();
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
@@ -4200,4 +4221,248 @@ fn a_local_chassis_carries_no_label_override() {
             "a local chassis names itself from its own key: {d}"
         );
     }
+}
+
+// ------------------------------------------------------- boot overrides ---
+
+/// One board: two consoles and the Bantam that drives them, on one USB branch,
+/// so the default controller profile binds and the sweep has a board to ask about.
+fn a_bantam_board(rig: &Rig) -> (&'static str, &'static str) {
+    const AP: &str = "/dev/serial/by-id/usb-FTDI_OVR_Board_AAAA-if00-port0";
+    const SM: &str = "/dev/serial/by-id/usb-FTDI_OVR_Board_AAAA-if01-port0";
+    rig.add_device_at(AP, Some("pci-0000:00:14.0-usb-0:6.1.1:1.0"), Some(5031));
+    rig.add_device_at(SM, Some("pci-0000:00:14.0-usb-0:6.1.2:1.0"), Some(5032));
+    rig.add_device_at(
+        "/dev/serial/by-id/usb-Microchip_Technology_Inc._Bantam_OVRBOARD-if00",
+        Some("pci-0000:00:14.0-usb-0:6.1.3:1.0"),
+        None,
+    );
+    (AP, SM)
+}
+
+fn held_md_edl() -> serde_json::Value {
+    serde_json::json!({
+        "supported": true, "state": "latched",
+        "overrides": {"MD_EDL": 1, "SS_EDL": 0, "UEFI": 0, "FASTBOOT_MD": 0},
+        "asserted": ["MD_EDL"], "unknown": [],
+        "effect": "the controller is HOLDING MD_EDL",
+        "read_at_ms": 1_700_000_000_000_i64, "age_ms": 1234,
+        "source": "controller_read",
+    })
+}
+
+/// The status refresh is strictly read-only, and it is how the page learns what
+/// a controller is holding.
+///
+/// Asserted on what dashd SENDS: across several sweeps of a board whose
+/// controller holds MD_EDL, every call to mcpd is `diagnose`, which takes no
+/// lease and actuates nothing. Anything else here (an acquire, a boot_mode, a
+/// power) would mean looking at the page can change a board, and a status path
+/// that could release an override would knock a board out of the EDL a flash is
+/// relying on from a page reload.
+#[test]
+fn the_status_sweep_reads_what_is_held_and_never_sends_anything_else() {
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "diagnose".to_string(),
+        serde_json::json!({"power": "on", "edl": false, "boot_overrides": held_md_edl()}),
+    );
+    let mcp = FakeMcp::start_answering("unused", answers);
+    let mut c = cfg();
+    c.dashboard.allow_power = true;
+    c.dashboard.mcp_url = mcp.url.clone();
+    let rig = Rig::start(c);
+    let (ap, sm) = a_bantam_board(&rig);
+
+    let v = rig.until("the sweep to publish what the controller holds", |v| {
+        v["devices"].as_array().is_some_and(|a| {
+            a.iter()
+                .any(|d| d["canonical"] == ap && d["boot_overrides"]["state"] == "latched")
+        })
+    });
+    let row = |name: &str| {
+        v["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["canonical"] == name)
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        row(ap)["boot_overrides"]["asserted"],
+        serde_json::json!(["MD_EDL"])
+    );
+    assert_eq!(
+        row(sm)["boot_overrides"]["asserted"],
+        serde_json::json!(["MD_EDL"]),
+        "the overrides belong to the BOARD: its other console must show them too: {v}"
+    );
+    // And the controller's own row. On a local bench the panel that shows this is
+    // drawn from that row, not from a console: filed per console, the reading
+    // reached every row except the one the panel reads, and it said "not read
+    // yet" for ever beside consoles that knew the answer.
+    let ctl = "/dev/serial/by-id/usb-Microchip_Technology_Inc._Bantam_OVRBOARD-if00";
+    assert_eq!(
+        row(ctl)["is_controller"],
+        true,
+        "precondition: the fixture's controller row is on the page: {v}"
+    );
+    assert_eq!(
+        row(ctl)["boot_overrides"]["asserted"],
+        serde_json::json!(["MD_EDL"]),
+        "the controller's own row is what the panel is drawn from: {v}"
+    );
+    assert!(
+        row(ap)["boot_overrides"].get("age_ms").is_none(),
+        "mcpd's per-reply age must not reach the snapshot, or every sweep reads as a change"
+    );
+    // The observation stays its own field: nothing about EDL was merged in.
+    assert_eq!(row(ap)["power"], "on", "{v}");
+
+    // Let a couple more sweeps go by, then look at everything dashd ever sent.
+    std::thread::sleep(Duration::from_secs(11));
+    let names = mcp.names();
+    assert!(
+        names.len() >= 2,
+        "precondition: the sweep really ran: {names:?}"
+    );
+    assert!(
+        names.iter().all(|n| n == "diagnose"),
+        "a status refresh sent mcpd something other than a read: {names:?}"
+    );
+}
+
+/// A press shows what the controller holds NOW, without waiting for the sweep.
+///
+/// `boot_mode` reads the controller back after acting and says so in its reply.
+/// Leaving the page on the pre-press reading until the next window looks exactly
+/// like the press not working.
+#[test]
+fn a_boot_mode_press_publishes_its_own_readback_at_once() {
+    let mut answers = std::collections::HashMap::new();
+    // The sweep sees nothing held...
+    answers.insert(
+        "diagnose".to_string(),
+        serde_json::json!({"power": "on", "boot_overrides": {
+            "supported": true, "state": "clear", "overrides": {}, "asserted": [], "unknown": [],
+            "read_at_ms": 1_700_000_000_000_i64}}),
+    );
+    // ...and the press reports the line it just asserted.
+    answers.insert(
+        "boot_mode".to_string(),
+        serde_json::json!({"mode": "BOOT_MD_EDL", "boot_overrides": held_md_edl()}),
+    );
+    let mcp = FakeMcp::start_answering("unused", answers);
+    let mut c = cfg();
+    c.dashboard.allow_power = true;
+    c.dashboard.mcp_url = mcp.url.clone();
+    let rig = Rig::start(c);
+    let (ap, sm) = a_bantam_board(&rig);
+    rig.until("the board", |v| {
+        v["devices"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|d| d["canonical"] == ap))
+    });
+
+    let enc = ap.replace('/', "%2F");
+    let (code, _) = rig.post(&format!("/api/boot_mode/{enc}/BOOT_MD_EDL"));
+    assert_eq!(code, 200);
+    let v = rig.until("the press's readback on BOTH consoles", |v| {
+        v["devices"].as_array().is_some_and(|a| {
+            [ap, sm].iter().all(|n| {
+                a.iter()
+                    .any(|d| d["canonical"] == *n && d["boot_overrides"]["state"] == "latched")
+            })
+        })
+    });
+    assert!(v["devices"].is_array());
+}
+
+/// The Normal boot press is ONE mcpd actuation, under the usual press lease.
+///
+/// The sequencing (release, verify, cycle, abort before cycling) lives in mcpd
+/// under a single claim and is gated there. What this holds is that the page
+/// cannot turn it back into separate presses with a gap between them.
+#[test]
+fn a_normal_boot_press_is_one_actuation_not_a_clear_and_a_cycle() {
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "normal_boot".to_string(),
+        serde_json::json!({"device": "x", "boot_id": 7, "normal_boot": {"boot_overrides": {
+            "supported": true, "state": "clear", "overrides": {}, "asserted": [], "unknown": [],
+            "read_at_ms": 1_700_000_000_000_i64}}}),
+    );
+    let mcp = FakeMcp::start_answering("unused", answers);
+    let mut c = cfg();
+    c.dashboard.allow_power = true;
+    c.dashboard.mcp_url = mcp.url.clone();
+    let rig = Rig::start(c);
+    let (ap, _) = a_bantam_board(&rig);
+    rig.until("the board", |v| {
+        v["devices"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|d| d["canonical"] == ap))
+    });
+
+    let enc = ap.replace('/', "%2F");
+    let (code, body) = rig.post(&format!("/api/normal_boot/{enc}"));
+    assert_eq!(code, 200, "{body}");
+    let acts: Vec<String> = mcp
+        .names()
+        .into_iter()
+        .filter(|n| n != "diagnose")
+        .collect();
+    assert_eq!(
+        acts,
+        vec!["acquire", "normal_boot", "release"],
+        "one actuation between the lease and its return, and no boot_mode or power beside it"
+    );
+}
+
+/// An ABORTED normal boot is reported as a failure, and what is still held is
+/// on the page at once.
+#[test]
+fn an_aborted_normal_boot_fails_loudly_and_shows_what_is_still_held() {
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "normal_boot".to_string(),
+        serde_json::json!({"error": {
+            "code": "NORMAL_BOOT_ABORTED",
+            "message": "normal boot stopped at `verify_overrides`: ... Power was NOT cycled",
+            "detail": {"step": "verify_overrides", "power_cycled": false,
+                       "boot_overrides": held_md_edl()}}}),
+    );
+    let mcp = FakeMcp::start_answering("unused", answers);
+    let mut c = cfg();
+    c.dashboard.allow_power = true;
+    c.dashboard.mcp_url = mcp.url.clone();
+    let rig = Rig::start(c);
+    let (ap, _) = a_bantam_board(&rig);
+    rig.until("the board", |v| {
+        v["devices"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|d| d["canonical"] == ap))
+    });
+
+    let enc = ap.replace('/', "%2F");
+    let (code, body) = rig.post(&format!("/api/normal_boot/{enc}"));
+    assert_eq!(
+        code, 400,
+        "an abort is a failed press, not a quiet success: {body}"
+    );
+    assert!(
+        body.contains("NOT cycled"),
+        "and the page is told why: {body}"
+    );
+    rig.until("what is still held", |v| {
+        v["devices"].as_array().is_some_and(|a| {
+            a.iter()
+                .any(|d| d["canonical"] == ap && d["boot_overrides"]["state"] == "latched")
+        })
+    });
+    assert!(
+        mcp.names().contains(&"release".to_string()),
+        "a failed press still hands the console back"
+    );
 }

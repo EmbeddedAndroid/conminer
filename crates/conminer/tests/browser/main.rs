@@ -2802,3 +2802,175 @@ fn a_chatty_console_is_drawn_as_fast_as_it_arrives() {
          with a full scrollback that was over 30 s when every frame rebuilt it: {v}"
     );
 }
+
+// -------------------------------------------- what the controller is holding ---
+
+/// The controller panel says what is held across boots, and says it apart from
+/// everything about EDL, power or capture.
+///
+/// A board whose controller holds MD_EDL sits in ROM EDL with a silent console
+/// through any number of power cycles while the page shows a powered board and
+/// nothing wrong. Rendered in a real browser because the claim is about what a
+/// person looking at the page can see.
+///
+/// The third state is the one that matters most: a controller that did not
+/// answer must read as UNKNOWN, never as "none held".
+#[test]
+fn the_controller_panel_shows_what_is_held_and_unknown_is_never_none() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_with_board();
+    let probe = r#"
+      (() => {
+        const show = (reading) => {
+          for (const d of state.devices) d.boot_overrides = reading;
+          state.server_now = 1700000012000;
+          render();
+          const row = document.querySelector(".ctl-row.ovr");
+          return row ? {state: row.dataset.state, text: row.textContent,
+                        held: [...row.querySelectorAll(".ovr-chip.held")].map(c => c.textContent),
+                        label: row.querySelector(".lbl").textContent} : null;
+        };
+        const base = {supported: true, overrides: {}, asserted: [], unknown: [],
+                      read_at_ms: 1700000000000, effect: "x"};
+        return JSON.stringify({
+          held: show({...base, state: "latched", asserted: ["MD_EDL"]}),
+          clear: show({...base, state: "clear"}),
+          unknown: show({...base, state: "unknown", error: "controller did not answer"}),
+          unsupported: show({supported: false, state: "unsupported", why: "no read hook"}),
+          not_read: show(null),
+        });
+      })()
+    "#;
+    let out = browser.eval_after_load(
+        &format!("{}/?nostream=1", rig.base),
+        Duration::from_millis(1500),
+        probe,
+    );
+    let v: Value = serde_json::from_str(out.as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert!(
+        v["held"].is_object(),
+        "the panel must have a held-across-boots row: {v}"
+    );
+
+    assert_eq!(v["held"]["held"], serde_json::json!(["MD_EDL held"]), "{v}");
+    assert!(
+        v["held"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Survives power cycles"),
+        "a held line must say what it MEANS: {v}"
+    );
+    assert!(
+        v["held"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("12 s ago"),
+        "and how old the controller reading is, by the server's clock: {v}"
+    );
+    assert!(
+        !v["held"]["label"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("edl"),
+        "the row is about what the controller holds, not about observed EDL: {v}"
+    );
+
+    assert!(
+        v["clear"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("none held"),
+        "{v}"
+    );
+    for unsure in ["unknown", "unsupported", "not_read"] {
+        let text = v[unsure]["text"].as_str().unwrap_or_default();
+        assert!(
+            !text.contains("none held"),
+            "`{unsure}` must never render as none held; nobody has checked: {v}"
+        );
+        assert!(
+            v[unsure]["held"].as_array().is_some_and(|a| a.is_empty()),
+            "{v}"
+        );
+    }
+}
+
+/// Normal boot is its own press and its own endpoint.
+///
+/// Not a Clear followed by a Cycle from the page: two requests have a gap
+/// between them that anything can get into, and mcpd's promise (release, PROVE
+/// it, then cycle, under one claim) cannot be kept by a browser.
+#[test]
+fn the_normal_boot_button_is_one_request_to_its_own_endpoint() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_with_board();
+    let probe = r#"
+      (() => {
+        window.__calls = [];
+        const real = window.fetch;
+        window.fetch = (...a) => {
+          window.__calls.push({url: String(a[0]), method: (a[1] || {}).method || "GET"});
+          return real(...a);
+        };
+        return new Promise(r => {
+          const t0 = Date.now();
+          const tick = () => {
+            const b = [...document.querySelectorAll("button.act")]
+              .find(x => /^\s*normal boot\s*$/i.test(x.textContent || ""));
+            if (!b) {
+              if (Date.now() - t0 > 10000) r(JSON.stringify({error: "no Normal boot button"}));
+              else setTimeout(tick, 200);
+              return;
+            }
+            b.click();
+            setTimeout(() => r(JSON.stringify({
+              calls: window.__calls.filter(c => c.method === "POST"),
+              title: b.title,
+            })), 1500);
+          };
+          tick();
+        });
+      })()
+    "#;
+    let out = browser.eval_after_load(
+        &format!("{}/?nostream=1", rig.base),
+        Duration::from_millis(1500),
+        probe,
+    );
+    let v: Value = serde_json::from_str(out.as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert!(v.get("error").is_none(), "{v}");
+    let posts: Vec<&str> = v["calls"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|c| c["url"].as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(posts.len(), 1, "one press is one request: {v}");
+    // The panel is drawn from the controller's own row, so that is the device a
+    // press names (the Power buttons beside it do the same). What matters is
+    // that it is a real device of THIS board and never `undefined`.
+    assert!(
+        posts[0].contains("/api/normal_boot/") && posts[0].to_lowercase().contains("click"),
+        "to its own endpoint, naming a real device of this board: {v}"
+    );
+    assert!(
+        !posts[0].contains("undefined") && !posts[0].contains("null"),
+        "a press that names no device actuates nothing, or the wrong board: {v}"
+    );
+    assert!(
+        v["title"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Aborts before cycling"),
+        "and the button must say what it refuses to do: {v}"
+    );
+}

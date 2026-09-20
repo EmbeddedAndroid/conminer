@@ -82,14 +82,30 @@ pub fn group_by_controller(
         if d.is_controller || d.is_file || !d.has_power_hook {
             continue;
         }
-        let key = d
-            .controller_port
-            .clone()
-            .or_else(|| d.target.clone())
-            .unwrap_or_else(|| d.canonical.clone());
+        let key = controller_key(
+            d.controller_port.as_deref(),
+            d.target.as_deref(),
+            &d.canonical,
+        );
         groups.entry(key).or_default().push(d.canonical.clone());
     }
     groups
+}
+
+/// The key a BOARD's shared facts are filed under: its controller instance.
+///
+/// One derivation, used by the sweep that files a reading and by every row that
+/// looks one up, so the two cannot disagree about which board a row belongs to.
+/// What a controller is holding across boots is a fact about the board, and the
+/// panel that shows it is drawn from the CONTROLLER's own row on a local bench
+/// and from a console on a peer's: filing it per console left the local panel
+/// reading "not read yet" for ever, beside consoles that knew the answer.
+pub fn controller_key(
+    controller_port: Option<&str>,
+    target: Option<&str>,
+    canonical: &str,
+) -> String {
+    controller_port.or(target).unwrap_or(canonical).to_string()
 }
 
 /// Is this a thing on the bench, or only a row in the registry?
@@ -230,6 +246,15 @@ pub struct DashDevice {
     /// this whole field exists to remove.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power: Option<String>,
+    /// What this board's CONTROLLER is holding across boots, as mcpd read it
+    /// back from the controller: the boot-mode overrides, their levels, and when
+    /// they were read. `None` until a sweep has asked, or once the reading is
+    /// too old to show.
+    ///
+    /// Kept apart from every EDL indicator on purpose. Those are observations of
+    /// what the board is doing; this is what the controller intends for the NEXT
+    /// boot, and either can be true without the other.
+    pub boot_overrides: Option<Value>,
     /// Which controller profile drives this console, so the page can say where
     /// its buttons came from.
     pub controller: Option<String>,
@@ -331,6 +356,7 @@ impl Default for DashDevice {
             boot_modes: Vec::new(),
             has_power_hook: false,
             power_sensed_at: None,
+            boot_overrides: None,
             power: None,
             controller: None,
             controller_port: None,
@@ -431,6 +457,11 @@ pub struct Dash {
     /// own power-off. Publishing the age turns an unknowable race into a
     /// checkable condition: ignore any reading older than the action.
     power_sensed_at: Arc<Mutex<HashMap<String, i64>>>,
+    /// The last boot-override reading per controller instance (`controller_key`),
+    /// and when this page got it. The reading carries its own `read_at_ms`; the
+    /// second value is only so a sweep that has stopped cannot leave an old one
+    /// on the page for ever.
+    overrides_cache: Arc<Mutex<HashMap<String, (Value, i64)>>>,
     /// Serialises the check-then-dial in `attach`.
     ///
     /// Without it two browsers opening the same console at the same instant both
@@ -463,6 +494,7 @@ impl Dash {
             attachments: Arc::new(Mutex::new(HashMap::new())),
             power_cache: Arc::new(Mutex::new(HashMap::new())),
             power_sensed_at: Arc::new(Mutex::new(HashMap::new())),
+            overrides_cache: Arc::new(Mutex::new(HashMap::new())),
             dialing: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
@@ -608,24 +640,80 @@ impl Dash {
     ///
     /// `None` means unknown, which must render as unknown and never as "off".
     pub async fn probe_power(&self, canonical: &str) -> Option<String> {
+        self.probe_board(canonical).await.0
+    }
+
+    /// Ask mcpd about this board ONCE, and take both answers from the reply:
+    /// whether it is powered, and what its controller is holding across boots.
+    ///
+    /// One `diagnose` carries both, so showing the overrides costs this page no
+    /// extra call, and mcpd reads the controller for them at most once per its
+    /// own age window however many dashboards are asking. Strictly read-only:
+    /// `diagnose` takes no lease and actuates nothing, and this never sends
+    /// anything else. A status refresh that could move an override would let a
+    /// page reload knock a board out of the EDL a flash is relying on.
+    pub async fn probe_board(&self, canonical: &str) -> (Option<String>, Option<Value>) {
         let base = self.config.dashboard.mcp_url.clone();
-        let res = call_mcp(&base, "diagnose", json!({"device": canonical}))
-            .await
-            .ok()?;
+        let Ok(res) = call_mcp(&base, "diagnose", json!({"device": canonical})).await else {
+            return (None, None);
+        };
         // call_mcp returns the whole JSON-RPC envelope, so the tool's own
         // payload lives under result.structuredContent. Reading `power` off the
         // top level silently yielded None for every board, which rendered as
         // "cannot measure" on two controllers that measure it perfectly well.
-        match res
-            .get("result")
-            .and_then(|r| r.get("structuredContent"))
-            .and_then(|c| c.get("power"))
-            .and_then(Value::as_str)
-        {
+        let content = res.get("result").and_then(|r| r.get("structuredContent"));
+        let power = match content.and_then(|c| c.get("power")).and_then(Value::as_str) {
             Some("on") => Some("on".into()),
             Some("off") => Some("off".into()),
             _ => None,
+        };
+        let overrides = content
+            .and_then(|c| c.get("boot_overrides"))
+            .filter(|o| o.is_object())
+            .cloned();
+        (power, overrides)
+    }
+
+    /// Record what a controller is holding, under its `controller_key`.
+    pub fn publish_overrides(&self, keys: &[String], reading: Option<Value>, at: i64) {
+        let canonicals = keys;
+        let mut cache = self
+            .overrides_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // `age_ms` is mcpd's age at the moment it answered, so it is different in
+        // every reply even when the reading is the same one. Kept, it would make
+        // every sweep look like a change and re-render the whole page for
+        // nothing; the page works the age out from `read_at_ms` instead.
+        let reading = reading.map(|mut r| {
+            if let Some(o) = r.as_object_mut() {
+                o.remove("age_ms");
+            }
+            r
+        });
+        for c in canonicals {
+            match &reading {
+                Some(r) => cache.insert(c.clone(), (r.clone(), at)),
+                None => cache.remove(c),
+            };
         }
+    }
+
+    /// The reading to show, while it is still worth showing.
+    ///
+    /// Same rule as power: an answer this page stopped refreshing is dropped
+    /// rather than left looking current. The page then says "not read", which is
+    /// true, instead of "nothing held", which nobody has checked.
+    pub fn fresh_overrides(&self, key: &str) -> Option<Value> {
+        let cache = self
+            .overrides_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (reading, at) = cache.get(key)?;
+        if now_ms().saturating_sub(*at) > POWER_MAX_AGE_MS {
+            return None;
+        }
+        Some(reading.clone())
     }
 
     pub fn refresh(&self) -> Result<bool> {
@@ -777,6 +865,11 @@ impl Dash {
                     // answer and a truthful one; the age is published alongside
                     // so a caller can judge for itself.
                     power: self.fresh_power(&d.canonical),
+                    boot_overrides: self.fresh_overrides(&controller_key(
+                        controller_port.as_deref(),
+                        d.target.as_deref(),
+                        &d.canonical,
+                    )),
                     power_sensed_at: self
                         .power_sensed_at
                         .lock()
@@ -1486,7 +1579,9 @@ async fn hardware_action(d: &Dash, selector: &str, tool: &str, args: Value) -> R
     // the canonical the tool reports. Over-invalidating is safe by construction:
     // its only effect is a brief "unknown", never a wrong value. Under-
     // invalidating is what states a stale fact.
-    if tool == "power" {
+    // A normal boot ends in a power cycle, so its power reading goes the same way.
+    let cycles_power = tool == "power" || tool == "normal_boot";
+    if cycles_power {
         let group = match d.find(selector) {
             Some(dev) => d.consoles_sharing_controller(&dev.canonical),
             None => vec![selector.to_string()],
@@ -1513,7 +1608,42 @@ async fn hardware_action(d: &Dash, selector: &str, tool: &str, args: Value) -> R
             // back in the tool result, so this follows whatever device the
             // action actually hit -- not the selector we hoped it hit, which is
             // the distinction that let a button actuate the wrong board.
-            if !is_err && tool == "power" {
+            // What the controller holds now, straight from the tool's own
+            // readback, on success AND on failure. `boot_mode` and `normal_boot`
+            // both read the controller back after acting, and an aborted normal
+            // boot says what is still held in its error detail. Waiting for the
+            // sweep instead would leave the page showing the state from before
+            // the press for up to a whole window, which reads exactly like the
+            // press not working.
+            if tool == "boot_mode" || tool == "normal_boot" {
+                let reading = [
+                    content.get("boot_overrides"),
+                    content
+                        .get("normal_boot")
+                        .and_then(|n| n.get("boot_overrides")),
+                    content
+                        .get("error")
+                        .and_then(|e| e.get("detail"))
+                        .and_then(|x| x.get("boot_overrides")),
+                ]
+                .into_iter()
+                .flatten()
+                .find(|o| o.get("supported").and_then(Value::as_bool) == Some(true))
+                .cloned();
+                if let Some(reading) = reading {
+                    let key = match d.find(selector) {
+                        Some(dev) => controller_key(
+                            dev.controller_port.as_deref(),
+                            dev.target.as_deref(),
+                            &dev.canonical,
+                        ),
+                        None => selector.to_string(),
+                    };
+                    d.publish_overrides(&[key], Some(reading), now_ms());
+                    let _ = d.refresh();
+                }
+            }
+            if !is_err && cycles_power {
                 if let Some(dev) = content.get("device").and_then(Value::as_str) {
                     // DROP THE OLD READING FIRST. Between dispatching the action
                     // and the settle-time re-probe below, the cache still holds
@@ -1637,6 +1767,19 @@ async fn boot_mode(
     .await
 }
 
+/// `POST /api/normal_boot/:selector`: release the boot-mode overrides, prove it,
+/// then power cycle.
+///
+/// One press, because the two presses it replaces are easy to get half right. A
+/// person who put a board into EDL from this page to flash it has to remember to
+/// press Clear afterwards, and Power Cycle alone looks like the natural "boot it
+/// normally" button while releasing nothing: the board goes straight back to
+/// EDL. mcpd does the three steps under one claim and refuses to cycle unless the
+/// controller reads back every override released.
+async fn normal_boot(State(d): State<Dash>, Path(selector): Path<String>) -> Response {
+    hardware_action(&d, &selector, "normal_boot", json!({"device": selector})).await
+}
+
 /// A console's read side: the broker when minerd is publishing, the raw ser2net
 /// socket when it is not. Boxed because those are different types and the
 /// reconnect path swaps between them.
@@ -1702,12 +1845,14 @@ pub fn spawn_power_poller(dash: Dash, mut shutdown: tokio::sync::watch::Receiver
             // An answer may be shared only between consoles that would ask the
             // SAME CONTROLLER. Anything wider is one board reporting another
             // board's power, which is indistinguishable from a lie.
-            for (_, consoles) in group_by_controller(&devices) {
+            for (key, consoles) in group_by_controller(&devices) {
                 let Some(first) = consoles.first() else {
                     continue;
                 };
-                let state = dash.probe_power(first).await;
-                dash.publish_power(&consoles, state, now_ms());
+                let (state, overrides) = dash.probe_board(first).await;
+                let at = now_ms();
+                dash.publish_power(&consoles, state, at);
+                dash.publish_overrides(&[key], overrides, at);
             }
             let _ = dash.refresh();
         }
@@ -1717,6 +1862,10 @@ pub fn spawn_power_poller(dash: Dash, mut shutdown: tokio::sync::watch::Receiver
 pub fn router(dash: Dash) -> Router {
     Router::new()
         .route("/api/power/:selector/:action", axum::routing::post(power))
+        .route(
+            "/api/normal_boot/:selector",
+            axum::routing::post(normal_boot),
+        )
         .route(
             "/api/boot_mode/:selector/:mode",
             axum::routing::post(boot_mode),

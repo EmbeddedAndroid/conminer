@@ -423,6 +423,16 @@ button.act.fail { color: var(--danger); border-color: var(--danger); }
 .ctl-row .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase;
                 letter-spacing: .4px; margin-right: 2px; }
 .ctl-msg { font-size: 12px; color: var(--muted); margin-left: 2px; }
+/* What the controller is HOLDING across boots. A held line is the loudest
+   thing on the panel, because it decides the next boot and nothing else on the
+   page would tell you; "none held" is quiet; "unknown" is visibly NOT "none". */
+.ovr-chip { font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 4px;
+  border: 1px solid var(--line); letter-spacing: .2px; }
+.ovr-chip.held { color: #fff; background: #b4451f; border-color: #b4451f; }
+.ovr-chip.clear { color: var(--muted); font-weight: 600; }
+.ovr-chip.unknown { color: var(--ink); border-style: dashed; }
+.ovr-age { font-size: 11px; color: var(--muted); }
+.ovr-why { flex-basis: 100%; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 /* A solo console window shows the console and nothing else. */
 main.solo .grid, main.solo #empty { display: none; }
 main.solo .console { margin-top: 0; }
@@ -681,6 +691,10 @@ function ingest(s) {
   state.node = s.node || state.node;
   state.node_host = s.node_host || state.node_host;
   state.build = s.build || state.build;
+  // The server's own clock at the moment of this snapshot, so the age of a
+  // controller reading is measured between two server timestamps rather than
+  // against whatever this browser believes the time is.
+  if (s.server_now) state.server_now = s.server_now;
 }
 
 // ------------------------------------------------------------ device list ---
@@ -1233,6 +1247,22 @@ function controllerCard(d) {
             `/api/power/${encodeURIComponent(d.device)}/${a}`, `power ${a}`, a));
   }
   const modes = d.boot_modes || [];
+  box.appendChild(overridesRow(d));
+  if (d.has_power_hook && modes.length) {
+    // One press out of a latched mode. Power Cycle looks like "boot it normally"
+    // and releases nothing: a board left in EDL goes straight back to EDL, which
+    // reads as dead firmware. This releases every override, requires the
+    // controller to read them back released, and only then cycles. It refuses to
+    // cycle if that proof fails, and says so.
+    const row = bar("Recover", ["normal_boot"], () => {
+      const b = mkBtn("Normal boot", `/api/normal_boot/${encodeURIComponent(d.device)}`,
+                      "normal boot", "normal_boot");
+      b.title = "Release every boot override, verify the readback, then power cycle. " +
+                "Aborts before cycling if the release cannot be proven.";
+      return b;
+    });
+    if (row) row.dataset.recover = d.device;
+  }
   if (modes.length) {
     // "clear" alongside the modes, ALWAYS.
     //
@@ -1253,6 +1283,68 @@ function controllerCard(d) {
   last.appendChild(msg);
   box.appendChild(last);
   return box;
+}
+
+/// What this board's controller is HOLDING across boots, read from the
+/// controller by mcpd.
+///
+/// Its own row, away from the power lamp and away from anything that says EDL.
+/// Those report what the board is DOING; this is what the controller will make
+/// it do on the NEXT boot, and a board can be in EDL with nothing held, or have
+/// MD_EDL held while it is happily running Linux until the next reset.
+///
+/// Three states, and the point of the third: "none held" is only ever shown when
+/// every line was read back released. A controller that did not answer renders
+/// as unknown, never as none.
+function overridesRow(d) {
+  const row = document.createElement("div");
+  row.className = "ctl-row ovr";
+  row.dataset.overrides = d.device;
+  const l = document.createElement("span");
+  l.className = "lbl";
+  l.textContent = "Held across boots";
+  row.appendChild(l);
+  const chip = (cls, text, title) => {
+    const c = document.createElement("span");
+    c.className = "ovr-chip " + cls;
+    c.textContent = text;
+    if (title) c.title = title;
+    row.appendChild(c);
+  };
+  const o = d.boot_overrides;
+  if (!o) {
+    row.dataset.state = "not_read";
+    chip("unknown", "not read yet", "no controller reading has reached this page yet");
+    return row;
+  }
+  row.dataset.state = o.state || "unknown";
+  if (o.supported === false) {
+    chip("unknown", "cannot be read", o.why || "");
+    return row;
+  }
+  if (o.state === "latched") {
+    for (const name of (o.asserted || [])) chip("held", `${name} held`, o.effect || "");
+    for (const name of (o.unknown || [])) chip("unknown", `${name} unknown`, o.error || "");
+  } else if (o.state === "clear") {
+    chip("clear", "none held", o.effect || "");
+  } else {
+    chip("unknown", "unknown", o.error || o.effect || "");
+  }
+  if (o.read_at_ms && state.server_now) {
+    const secs = Math.max(0, Math.round((state.server_now - o.read_at_ms) / 1000));
+    const age = document.createElement("span");
+    age.className = "ovr-age";
+    age.textContent = `controller read ${secs} s ago`;
+    row.appendChild(age);
+  }
+  if (o.state === "latched") {
+    const why = document.createElement("div");
+    why.className = "ovr-why";
+    why.textContent = "Survives power cycles: every boot goes there until it is released. " +
+                      "Clear releases it; Normal boot releases, verifies and cycles.";
+    row.appendChild(why);
+  }
+  return row;
 }
 
 /// `usb-FTDI_IQ10_UART-SPI_AR40BYP4AU` -> `FTDI IQ10 UART-SPI · AR40BYP4AU`

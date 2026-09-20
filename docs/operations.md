@@ -47,6 +47,15 @@ answers that disagree for reasons that have nothing to do with the boards.
 Every service except `peerd` carries a healthcheck. A node that answers
 `/api/reports` with the expected `build` is serving the code you think it is.
 
+## A board that keeps coming up in EDL
+
+A powered board with a silent console that returns to EDL after every power
+cycle is usually not broken firmware. Look at the controller panel's *Held
+across boots* row, or call `boot_overrides`: a latching controller keeps a
+boot-mode line asserted until it is released, and `power cycle` releases
+nothing. *Normal boot* (or `normal_boot` over MCP) releases every line, proves
+it by readback, and only then cycles. See [boot-overrides.md](boot-overrides.md).
+
 ## Storage
 
 Stores grow with use. `stats` reports `db_bytes`, line and template counts, and
