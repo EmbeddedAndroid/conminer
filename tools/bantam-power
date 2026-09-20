@@ -54,8 +54,14 @@ Refusing to guess which board to actuate"
 
 HOLD="${BANTAM_HOLD:-0.3}"
 OFF_SETTLE="${BANTAM_OFF_SETTLE:-6}"
-LOCK="/run/conminer/bantam.lock"
+LOCK="${BANTAM_LOCK:-/run/conminer/bantam.lock}"
 FAILED=0
+
+# The boot-mode overrides this controller can hold. ONE list, used by the read
+# and by the clear, so the two can never disagree about what "the overrides" are:
+# a clear that released three lines while the status read reported four would
+# verify a board as normal with one strap still asserted.
+STRAPS="MD_EDL SS_EDL UEFI FASTBOOT_MD"
 
 [ -e "$PORT" ] || die "no controller at $PORT"
 mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
@@ -154,7 +160,7 @@ pulse_resin() {
 }
 
 action="${1:-}"
-[ -n "$action" ] || die "usage: bantam-power <on|off|cycle|reset|id|state|power-state|mode|mode-clear> [--settle N]"
+[ -n "$action" ] || die "usage: bantam-power <on|off|cycle|reset|id|state|power-state|boot-overrides|mode|mode-clear> [--settle N]"
 shift || true
 
 # `--settle` carries the board's configured off->on delay from the controller
@@ -196,9 +202,31 @@ case "$action" in
             *) echo "unknown" ;;
         esac
         ;;
+    boot-overrides)
+        # What is this controller HOLDING across boots? One `NAME=0|1|unknown`
+        # line per override, for conminer to parse.
+        #
+        # A latched MD_EDL survives every power cycle and sends the board into
+        # ROM EDL with a silent console, which reads as dead firmware. conminer
+        # could SET and CLEAR these lines; it could not show them.
+        #
+        # Read-only by construction: every line this sends is a `?` query. A
+        # status refresh that could change a strap would be a way to knock a
+        # board out of the EDL a flash is relying on, from a page reload.
+        #
+        # Anything but a clean 0 or 1 is `unknown`, never a guess: a controller
+        # that did not answer has not said the line is released.
+        for sig in $STRAPS; do
+            v=$(get "$sig")
+            case "$v" in
+                0|1) echo "$sig=$v" ;;
+                *)   echo "$sig=unknown" ;;
+            esac
+        done
+        ;;
     state)
         for sig in PWR_OFF KK_RESIN_N MD_PS_HOLD SAIL_PS_HOLD PMS_PON_DONE \
-                   POFF_DONE MD_EDL SS_EDL UEFI FASTBOOT_MD EUD; do
+                   POFF_DONE $STRAPS EUD; do
             echo "  $sig = $(get "$sig")"
         done
         ;;
@@ -211,7 +239,7 @@ case "$action" in
             # the container for `bantam-power set MD_EDL 0` -- anyone who can set
             # a strap must be able to release it the same way.
             if [ "$a1" = "clear" ] || [ "$a1" = "none" ] || [ "$a1" = "normal" ]; then
-                for sig in MD_EDL SS_EDL UEFI FASTBOOT_MD; do
+                for sig in $STRAPS; do
                     set_verify "$sig" 0
                 done
                 exit_after_clear=1
@@ -248,7 +276,7 @@ case "$action" in
     mode-clear)
             # Boot straps latch until cleared, so leaving one set silently
             # changes how every later boot behaves.
-            for s in MD_EDL SS_EDL UEFI FASTBOOT_MD; do
+            for s in $STRAPS; do
                 set_verify "$s" 0
             done ;;
     *)      die "unknown action '$action'" ;;

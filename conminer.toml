@@ -231,6 +231,11 @@ power = "bantam-power {action} --settle {off_settle} --port {controller}"
 boot_mode = "bantam-power mode {mode} --port {controller}"
 # Answers "is this board on?" so conminer states it instead of guessing.
 power_state = "bantam-power power-state --port {controller}"
+# Answers "what is this controller HOLDING across boots?". Read-only. A Bantam
+# latches its straps, so an MD_EDL left asserted survives every power cycle and
+# the board sits in ROM EDL with a silent console. This is the controller's
+# intent for the next boot; what USB shows is a separate, observed fact.
+boot_overrides = "bantam-power boot-overrides --port {controller}"
 boot_modes = ["BOOT_MD_EDL", "BOOT_SS_EDL", "BOOT_UEFI", "MD_FASTBOOT", "SS_MD_FASTBOOT"]
 off_settle_s = 6.0                    # let the PMIC rail collapse before restart
 

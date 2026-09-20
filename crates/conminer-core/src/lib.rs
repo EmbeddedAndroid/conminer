@@ -30,6 +30,7 @@ pub mod hooks;
 pub mod ingest;
 pub mod linesplit;
 pub mod live;
+pub mod overrides;
 pub mod peers;
 pub mod pipeline;
 pub mod recovery;

@@ -952,6 +952,18 @@ pub struct ControllerProfile {
     /// away. `{controller}` and `{device}` are substituted as for `power`.
     #[serde(default)]
     pub power_state: Option<String>,
+    /// Command that READS the boot-mode overrides the controller is holding,
+    /// printing one `NAME=0|1|unknown` line per override. Must not change one.
+    ///
+    /// A strap-latching controller keeps an override asserted across every power
+    /// cycle, so a board can sit in ROM EDL with a silent console for as long as
+    /// nobody thinks to look at a line conminer could set and clear but never
+    /// show. What USB shows (a QDL gadget on the bus) is an OBSERVATION of the
+    /// board; this is the controller's own INTENT for the next boot, and the two
+    /// are reported separately because either can be true without the other.
+    /// `{controller}` and `{device}` are substituted as for `power`.
+    #[serde(default)]
+    pub boot_overrides: Option<String>,
     pub flash: Option<String>,
     #[serde(default)]
     pub boot_modes: Vec<String>,
@@ -1432,6 +1444,7 @@ fn d_controllers() -> Vec<ControllerProfile> {
             power: Some("bantam-power {action} --settle {off_settle} --port {controller}".into()),
             boot_mode: Some("bantam-power mode {mode} --port {controller}".into()),
             power_state: Some("bantam-power power-state --port {controller}".into()),
+            boot_overrides: Some("bantam-power boot-overrides --port {controller}".into()),
             flash: None,
             boot_modes: vec![
                 "BOOT_MD_EDL".into(),
@@ -1466,6 +1479,7 @@ fn d_controllers() -> Vec<ControllerProfile> {
             // question is asked the same way for every controller and the answer
             // is explicit rather than missing.
             power_state: Some("conminer bughopper-power power-state --device {device}".into()),
+            boot_overrides: None,
             flash: None,
             // CBUS gives one boot-mode line (FORCED_USB_BOOT_N), so EDL is the only
             // mode this controller can select. Claiming more would be a lie.
@@ -1511,6 +1525,7 @@ fn d_controllers() -> Vec<ControllerProfile> {
             // track a real power cycle on this board -- so the readback is
             // reported as evidence, not as a verdict.
             power_state: Some("conminer tac-power power-state --device {device}".into()),
+            boot_overrides: None,
             flash: None,
             // Four real modes, each a distinct strap sequence in the vendor's
             // own config. `SAIL_EDL` is not a synonym for `EDL`: one straps the
@@ -2140,6 +2155,34 @@ impl Config {
         })
     }
 
+    /// Resolve the command that reads the controller's boot-mode overrides.
+    ///
+    /// Same refusal rule as `power_state_hook_for_at`, for the same reason: a
+    /// read aimed at an unknown controller reports ANOTHER board's straps, and a
+    /// clean "nothing latched" borrowed from the wrong board is the most
+    /// misleading answer this could give.
+    pub fn boot_overrides_hook_for_at<'a>(
+        &self,
+        canonical: &str,
+        by_path: Option<&str>,
+        present: impl IntoIterator<Item = (&'a str, Option<&'a str>)> + Clone,
+    ) -> Option<ResolvedHook> {
+        let c = self.controller_for(canonical)?;
+        let template = c.boot_overrides.clone()?;
+        let self_present = present.clone().into_iter().any(|(n, _)| n == canonical);
+        let controller = self.controller_port_for(canonical, by_path, present);
+        if !Self::template_can_run(&template, controller.as_deref(), self_present) {
+            return None;
+        }
+        Some(ResolvedHook {
+            power_timeout_s: c.power_timeout_s,
+            template,
+            controller,
+            off_settle_s: c.off_settle_s,
+            source: c.name.clone(),
+        })
+    }
+
     /// Same, for boot modes.
     pub fn boot_mode_hook_for_at<'a>(
         &self,
@@ -2619,6 +2662,7 @@ mod tests {
             power: Some("bantam-power {action} --settle {off_settle}".into()),
             boot_mode: Some("bantam-power mode {mode}".into()),
             power_state: None,
+            boot_overrides: None,
             flash: None,
             boot_modes: vec!["BOOT_MD_EDL".into(), "BOOT_UEFI".into()],
             off_settle_s: 6.0,
@@ -2747,6 +2791,7 @@ mod tests {
                 power: Some("conminer bughopper-power {action} --device {device}".into()),
                 boot_mode: Some("conminer bughopper-power mode {mode} --device {device}".into()),
                 power_state: None,
+                boot_overrides: None,
                 flash: None,
                 boot_modes: vec!["EDL".into()],
                 off_settle_s: 6.0,
