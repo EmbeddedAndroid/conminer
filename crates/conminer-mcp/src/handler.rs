@@ -104,14 +104,21 @@ impl Handler {
                  descriptors: a dead gadget still lists).\n\
                  - A silent console is off OR in EDL OR idle at a prompt. diagnose separates all \
                  three; console_state names the prompt and says why it is not commandable.\n\
+                 - A board that returns to EDL after EVERY power cycle is usually a LATCHED \
+                 OVERRIDE, not dead firmware: a strap-latching controller holds a boot-mode line \
+                 through power cycles, and `power` deliberately releases nothing (a flash \
+                 depends on that). `diagnose` and `boot_overrides` read what is held back from \
+                 the controller, separately from the observed `edl`; unknown is never clear. \
+                 `normal_boot` releases, PROVES it by readback, then cycles, and aborts before \
+                 cycling (NORMAL_BOOT_ABORTED) if it cannot prove the release.\n\
                  - Page with `next_offset` from the response, never by the limit you asked for.\n\
                  - Template `count` is frequency, not chronology. list_templates is a table of \
                  contents.\n\
                  - Costs: run_command ~7 s minimum (paced, echo-verified TX -- batch with `;`); \
                  power off spends up to 8 s excluding EDL before it answers; pull_file is for \
                  small files.\n\
-                 - `dry_run: true` on power/boot_mode/flash shows the exact hook argv and changes \
-                 nothing.\n\
+                 - `dry_run: true` on power/boot_mode/normal_boot/flash shows the exact hook argv \
+                 and changes nothing.\n\
                  - Errors are structured: branch on `code`; `hint` and `detail.accepted` are \
                  accurate. `freshness.boot_id` tells you which epoch you are reading.\n\
                  - THIS MCP IS THE ONLY WAY TO TOUCH A CONSOLE. Never telnet, nc, socat or open \

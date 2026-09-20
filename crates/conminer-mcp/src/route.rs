@@ -476,6 +476,7 @@ fn parse_code(code: &str) -> ErrorCode {
         "HOOK_TIMEOUT" => ErrorCode::HookTimeout,
         "ACTUATION_IN_FLIGHT" => ErrorCode::ActuationInFlight,
         "AWAY_IN_EDL" => ErrorCode::AwayInEdl,
+        "NORMAL_BOOT_ABORTED" => ErrorCode::NormalBootAborted,
         _ => ErrorCode::Internal,
     }
 }
@@ -502,6 +503,7 @@ mod tests {
             ErrorCode::HookTimeout,
             ErrorCode::ActuationInFlight,
             ErrorCode::AwayInEdl,
+            ErrorCode::NormalBootAborted,
         ] {
             assert_eq!(
                 parse_code(c.as_str()),

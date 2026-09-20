@@ -50,6 +50,30 @@ struct Inner {
     /// and its final effect. This is where an escalation that outlived its
     /// caller's patience leaves its answer, and what `actuation_status` reads.
     outcomes: Mutex<HashMap<i64, Value>>,
+    /// The last time each CONTROLLER's boot-mode overrides were read, and what
+    /// it said. Keyed on the controller instance, because the overrides belong
+    /// to the board and every console of it shares them.
+    ///
+    /// A read costs seconds of a single-session controller, and every dashboard
+    /// on the fleet asks the owner for it on a timer, so an asker may accept a
+    /// reading up to an age it names. It is never served without that age, and
+    /// every conminer action that changes an override replaces it with the
+    /// post-action readback, so a reading can only be stale with respect to a
+    /// change made OUTSIDE conminer.
+    overrides: Mutex<HashMap<String, OverridesReading>>,
+}
+
+/// One read of a controller's boot-mode overrides, with when and how it went.
+#[derive(Clone, Debug)]
+pub struct OverridesReading {
+    pub overrides: conminer_core::overrides::BootOverrides,
+    pub read_at_ms: i64,
+    /// Why the read produced nothing, when it did. A failed read is kept, so an
+    /// asker inside the age window is told "unknown, and here is why" instead of
+    /// hammering a controller that is not answering.
+    pub error: Option<String>,
+    pub controller: Option<String>,
+    pub controller_port: Option<String>,
 }
 
 /// One actuation still running on a console.
@@ -123,6 +147,7 @@ impl Context {
                 relay: Arc::new(conminer_core::peers::RelayQueue::new()),
                 actuations: Mutex::new(HashMap::new()),
                 outcomes: Mutex::new(HashMap::new()),
+                overrides: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -179,6 +204,24 @@ impl Context {
             ctx: self.clone(),
             ids: consoles.iter().map(|c| c.id).collect(),
         })
+    }
+
+    /// The last overrides reading for this controller, if there is one.
+    pub fn cached_overrides(&self, key: &str) -> Option<OverridesReading> {
+        self.inner
+            .overrides
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .cloned()
+    }
+
+    pub fn store_overrides(&self, key: &str, reading: OverridesReading) {
+        self.inner
+            .overrides
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_string(), reading);
     }
 
     /// Refuse a console-touching call while an actuation runs on the console.

@@ -3891,6 +3891,38 @@ pub fn registry() -> &'static [Tool] {
                     verdict
                 };
 
+                // What the controller is holding, beside what USB shows.
+                //
+                // `edl` above is an observation: a QDL gadget is on this board's
+                // ports right now. It says nothing about WHY, and the why is
+                // what decides the next move. Power on, EDL and a silent
+                // console can all be true, and none of them says the board
+                // will come straight back to EDL after any power cycle
+                // because the controller is holding the line. The controller
+                // can be asked.
+                //
+                // Shares the default age with the dashboards, whose sweep calls
+                // this tool every few seconds: at most one real controller read
+                // per window however often this runs, and the reading says how
+                // old it is. `boot_overrides {max_age_s: 0}` forces a fresh one.
+                let held = read_boot_overrides(ctx, &d, OVERRIDES_DEFAULT_MAX_AGE_MS);
+                let held_names: Vec<String> = held
+                    .as_ref()
+                    .map(|(r, _)| r.overrides.asserted().iter().map(|n| n.to_string()).collect())
+                    .unwrap_or_default();
+                let verdict: String = if held_names.is_empty() {
+                    verdict.to_string()
+                } else {
+                    format!(
+                        "{}. ALSO: the controller is HOLDING {} asserted. That survives \
+                         power cycles, so the board returns to that boot mode on every boot \
+                         until it is released: boot_mode(clear), or normal_boot to release, \
+                         verify and cycle in one step",
+                        verdict.trim_end_matches('.'),
+                        held_names.join(", ")
+                    )
+                };
+
                 fresh(ctx, &d, json!({
                     "verdict": verdict,
                     // Measured, not guessed. `null` means this controller cannot
@@ -3931,6 +3963,9 @@ pub fn registry() -> &'static [Tool] {
                     "stale_capture_state": stale_capture,
                     "device_state": d.state,
                     "capture_state": d.capture_state,
+                    // Controller-read INTENT for the next boot. Deliberately not
+                    // folded into `edl`: either can be true without the other.
+                    "boot_overrides": overrides_json(ctx, held),
                 }))
             },
         },
@@ -4332,6 +4367,43 @@ pub fn registry() -> &'static [Tool] {
                         o.insert("note".into(), json!(n));
                     }
                 }
+                // What is held now, read back from the controller.
+                //
+                // Forced fresh: this call just changed the answer. It also
+                // replaces the shared reading, so the dashboards show the new
+                // state at their next refresh instead of whenever their window
+                // on the old one runs out.
+                //
+                // And say so when more than one is held. A mode asserts its own
+                // line and releases nothing, so an earlier selection stays held
+                // beside the new one. Nothing about the call suggests that, and
+                // an EDL line decides the boot in ROM, before UEFI or fastboot
+                // ever run: picking BOOT_UEFI on a board still holding MD_EDL
+                // boots it into EDL and reads as the mode "not working".
+                if let Some(reading) = read_boot_overrides(ctx, &d, 0) {
+                    let held: Vec<String> =
+                        reading.0.overrides.asserted().iter().map(|n| n.to_string()).collect();
+                    let rendered = overrides_json(ctx, Some(reading));
+                    if let Some(o) = payload.as_object_mut() {
+                        if held.len() > 1 {
+                            o.insert("warning".into(), json!(format!(
+                                "{} overrides are held at once ({}). Selecting a mode asserts its \
+                                 own line and releases nothing, so an earlier selection is still \
+                                 in force, and an EDL line wins in ROM before UEFI or fastboot \
+                                 ever run. Use boot_mode(clear) first, or normal_boot",
+                                held.len(),
+                                held.join(", ")
+                            )));
+                        }
+                        if clearing && !held.is_empty() {
+                            o.insert("warning".into(), json!(format!(
+                                "the release ran but the controller still reads {} as held",
+                                held.join(", ")
+                            )));
+                        }
+                        o.insert("boot_overrides".into(), rendered);
+                    }
+                }
                 // THE UART IS GONE BY DESIGN, SO SAY SO IN THIS VERY RESPONSE.
                 //
                 // The freshness envelope is derived from the store, and the
@@ -4358,6 +4430,277 @@ pub fn registry() -> &'static [Tool] {
                         d.id,
                         conminer_core::live::CaptureState::AwayInEdl,
                     );
+                }
+                fresh(ctx, &d, payload)
+            },
+        },
+        Tool {
+            name: "boot_overrides",
+            description: "What the board's CONTROLLER is holding across boots: the boot-mode \
+                          overrides (EDL, fastboot, UEFI straps) read back from the controller \
+                          itself. Read-only, no lease, changes nothing. A strap-latching \
+                          controller keeps an override asserted through every power cycle, so a \
+                          board can sit in ROM EDL with a silent console until somebody looks \
+                          here. This is the controller's INTENT for the next boot; whether the \
+                          board is in EDL right now is a USB observation, reported as \
+                          `diagnose.edl`. A read that fails is `unknown`, never `clear`.",
+            mutating: false,
+            schema: || json!({
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string", "description": DEVICE_ARG},
+                    "target": {"type": "string", "description":
+                        "A whole board. Mutually exclusive with `device`."},
+                    "max_age_s": {"type": "integer", "minimum": 0, "default": 20, "description":
+                        "Accept a reading up to this old instead of reading the controller \
+                         again; 0 forces a read. A read holds a single-session controller for \
+                         seconds, and the response always says how old its reading is."}
+                },
+                "additionalProperties": false
+            }),
+            call: |ctx, a| {
+                let target = opt_s(a, "target");
+                let device = opt_s(a, "device");
+                if target.is_some() && device.is_some() {
+                    return Err(ToolError::new(
+                        ErrorCode::InvalidArgument,
+                        "`device` and `target` are mutually exclusive",
+                    ));
+                }
+                // Every console of a board shares its controller, so any one of
+                // them names the reading.
+                let d = match target {
+                    Some(t) => conminer_core::target::console_members(&ctx.registry(), t)?
+                        .0
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| {
+                            ToolError::new(
+                                ErrorCode::UnknownDevice,
+                                format!("target {t:?} has no consoles"),
+                            )
+                        })?,
+                    None => ctx.device_or_only(device)?,
+                };
+                let max_age_ms = opt_i(a, "max_age_s")
+                    .map(|s| s.max(0).saturating_mul(1000))
+                    .unwrap_or(OVERRIDES_DEFAULT_MAX_AGE_MS);
+                let reading = read_boot_overrides(ctx, &d, max_age_ms);
+                fresh(ctx, &d, json!({"boot_overrides": overrides_json(ctx, reading)}))
+            },
+        },
+        Tool {
+            name: "normal_boot",
+            description: "Boot the board NORMALLY: release every boot-mode override, PROVE by an \
+                          independent readback that the controller holds none, then power cycle. \
+                          Stops BEFORE the cycle, with NORMAL_BOOT_ABORTED, if the release fails \
+                          or the readback cannot show every override released, so a board is \
+                          never cycled on an assumption. This is the way out of a latched EDL: \
+                          `power cycle` alone deliberately releases nothing (a flash depends on \
+                          the override surviving resets), so a board with an EDL override held \
+                          re-enters EDL on every cycle. One claim covers the whole workflow, so \
+                          nothing else can actuate the board between the release and the cycle.",
+            mutating: true,
+            schema: || json!({
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string", "description": DEVICE_ARG},
+                    "target": {"type": "string", "description":
+                        "A whole board: opens a linked epoch on every console of the target. \
+                         Mutually exclusive with `device`."},
+                    "label": {"type": "string"},
+                    "dry_run": {"type": "boolean", "description":
+                        "Validate everything and show the three hook argvs, in order, WITHOUT \
+                         running any of them."}
+                },
+                "additionalProperties": false
+            }),
+            call: |ctx, a| {
+                use conminer_core::hooks::{self, PowerAction};
+                let scope = actuation_scope(ctx, a)?;
+                let d = scope.primary.clone();
+                let present = present_with_topology(ctx);
+                let topo = || present.iter().map(|(n, p)| (n.as_str(), p.as_deref()));
+
+                let clear_hook = ctx
+                    .config()
+                    .boot_mode_hook_for_at(d.display_name(), &d.canonical, d.by_path.as_deref(), topo())
+                    .ok_or_else(|| {
+                        ToolError::new(
+                            ErrorCode::HookNotConfigured,
+                            format!("no boot_mode hook for {}, so nothing can release its \
+                                     overrides", d.display_name()),
+                        )
+                    })?;
+                let plan = PowerPlan::resolve(ctx, &d)?;
+                let read_hook = ctx.config().boot_overrides_hook_for_at(
+                    &d.canonical,
+                    d.by_path.as_deref(),
+                    topo(),
+                );
+                // A controller that LATCHES and cannot be read back cannot be
+                // verified, and this tool's whole promise is that it verifies.
+                // Refusing here is better than a workflow that silently means
+                // "clear, hope, cycle" on exactly the hardware where hoping is
+                // what went wrong.
+                let sequences_itself = ctx
+                    .config()
+                    .controller_for(&d.canonical)
+                    .is_some_and(|c| c.mode_enters_immediately);
+                let latches = !sequences_itself;
+                if read_hook.is_none() && latches {
+                    return Err(ToolError::new(
+                        ErrorCode::HookNotConfigured,
+                        format!(
+                            "{} has no `boot_overrides` read hook, so a release of its overrides \
+                             cannot be verified and a normal boot cannot be promised",
+                            d.display_name()
+                        ),
+                    )
+                    .with_hint(
+                        "add `boot_overrides` to the controller profile; until then \
+                         boot_mode(clear) followed by power(cycle) still works, unverified",
+                    ));
+                }
+
+                let clear_timeout = std::time::Duration::from_secs(
+                    clear_hook
+                        .power_timeout_s
+                        .unwrap_or(ctx.config().hooks.power_timeout_s),
+                );
+                // Hooks get the canonical path, never the display name.
+                let name = d.canonical.clone();
+                let clear_controller = clear_hook.controller.clone().unwrap_or_default();
+                let clear_args = [
+                    ("mode", "clear"),
+                    ("device", name.as_str()),
+                    ("controller", clear_controller.as_str()),
+                ];
+
+                if flag(a, "dry_run") {
+                    return fresh(ctx, &d, json!({
+                        "dry_run": true,
+                        "sequence": [
+                            {"step": "clear_overrides",
+                             "command": hooks::render(&clear_hook.template, &clear_args),
+                             "timeout_s": clear_timeout.as_secs()},
+                            {"step": "verify_overrides",
+                             "command": read_hook.as_ref().map(|h| hooks::render(&h.template, &[
+                                 ("device", name.as_str()),
+                                 ("controller", h.controller.as_deref().unwrap_or_default()),
+                                 ("mode", ""), ("action", ""),
+                             ])),
+                             "aborts_unless": "every override reads back released"},
+                            {"step": "power_cycle",
+                             "command": hooks::render(&plan.hook.template, &plan.args("cycle")),
+                             "timeout_s": plan.timeout.as_secs()},
+                        ],
+                        "would_open_epochs": scope.consoles.iter()
+                            .map(|c| json!({"device": c.display_name()}))
+                            .collect::<Vec<_>>(),
+                        "target": scope.target,
+                        "lease_check": scope.lease_check(),
+                        "note": scope.note,
+                    }));
+                }
+
+                // One claim for the whole workflow. Two separate calls would
+                // leave a window between the release and the cycle in which
+                // another caller could latch an override again, and the cycle
+                // would then boot the board into it having "verified" it clear.
+                let in_flight = ctx.begin_actuation("normal_boot", "clear+cycle", &scope.consoles)?;
+                let started = std::time::Instant::now();
+                let ids: Vec<i64> = scope.consoles.iter().map(|c| c.id).collect();
+                let abort = |step: &str, why: String, mut detail: Value| -> ToolError {
+                    if let Some(o) = detail.as_object_mut() {
+                        o.insert("step".into(), json!(step));
+                        o.insert("power_cycled".into(), json!(false));
+                    }
+                    ctx.record_actuation_outcome(&ids, json!({
+                        "tool": "normal_boot",
+                        "action": "clear+cycle",
+                        "target": scope.target,
+                        "device": d.display_name(),
+                        "aborted_at": step,
+                        "power_cycled": false,
+                        "why": why,
+                        "finished_ms": ctx.now(),
+                    }));
+                    ToolError::new(
+                        ErrorCode::NormalBootAborted,
+                        format!(
+                            "normal boot stopped at `{step}`: {why}. Power was NOT cycled; the \
+                             board is doing whatever it was doing before this call"
+                        ),
+                    )
+                    .with_detail(detail)
+                };
+
+                // ---- 1. release ------------------------------------------
+                in_flight.phase("clear_overrides");
+                let cleared = match block_on(hooks::run(&clear_hook.template, &clear_args, clear_timeout)) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        // Say what the controller holds NOW: a release that
+                        // failed part way may have dropped some lines and not
+                        // others, and the caller's next move depends on which.
+                        let now_holding = overrides_json(ctx, read_boot_overrides(ctx, &d, 0));
+                        return Err(abort(
+                            "clear_overrides",
+                            format!("the release hook failed ({})", e.message),
+                            json!({"hook_error": e, "boot_overrides": now_holding}),
+                        ));
+                    }
+                };
+
+                // ---- 2. prove it -----------------------------------------
+                //
+                // An INDEPENDENT read, through the same path the dashboard and
+                // `diagnose` use, rather than trusting the release hook's own
+                // account of itself. `max_age 0`: a cached reading from before
+                // the release is precisely the wrong evidence.
+                in_flight.phase("verify_overrides");
+                let verified = match &read_hook {
+                    Some(_) => {
+                        let reading = read_boot_overrides(ctx, &d, 0);
+                        let ok = reading
+                            .as_ref()
+                            .is_some_and(|(r, _)| r.overrides.all_released());
+                        let rendered = overrides_json(ctx, reading);
+                        if !ok {
+                            return Err(abort(
+                                "verify_overrides",
+                                format!(
+                                    "the readback does not show every override released \
+                                     (state: {})",
+                                    rendered["state"].as_str().unwrap_or("unknown")
+                                ),
+                                json!({"cleared": cleared, "boot_overrides": rendered}),
+                            ));
+                        }
+                        rendered
+                    }
+                    None => json!({
+                        "supported": false,
+                        "state": "not_latching",
+                        "why": "this controller sequences a boot mode itself and releases it \
+                                when done; it holds nothing across boots, so there is nothing \
+                                to read back",
+                    }),
+                };
+
+                // ---- 3. cycle --------------------------------------------
+                in_flight.phase("hook");
+                let label = opt_s(a, "label").unwrap_or("normal_boot (overrides released and verified)");
+                let mut payload = run_power(
+                    ctx, &scope, &d, PowerAction::Cycle, &plan, Some(label), false, in_flight, started,
+                )?;
+                if let Some(o) = payload.as_object_mut() {
+                    o.insert("normal_boot".into(), json!({
+                        "cleared": cleared,
+                        "boot_overrides": verified,
+                        "sequence": ["clear_overrides", "verify_overrides", "power_cycle"],
+                    }));
                 }
                 fresh(ctx, &d, payload)
             },
@@ -6980,6 +7323,10 @@ pub const CORE_TOOLS: &[&str] = &[
     "power",
     "actuation_status",
     "boot_mode",
+    // The way OUT of a latched boot mode belongs next to the way in. `diagnose`
+    // (also core) reports a held override and names this tool, so a session on
+    // the core surface can both see the trap and leave it.
+    "normal_boot",
     "list_boots",
     "boot_stages",
     "boot_report",
@@ -7436,10 +7783,11 @@ pub fn capture_state_is_stale<'a>(
 
 /// Everything `power` works out before it touches a board.
 ///
-/// Its own type so that a second tool can press power through this exact path.
-/// A second copy of the press, its verification and its escalation would drift
-/// from this one the way the two inventory builders did, and the difference
-/// would be found on hardware.
+/// Its own type because two tools press power: `power` itself, and
+/// `normal_boot`, which releases the boot-mode overrides first. A second copy of
+/// the press, its verification and its escalation would drift from this one the
+/// way the two inventory builders did, and the difference would be found on
+/// hardware.
 struct PowerPlan {
     hook: conminer_core::config::ResolvedHook,
     timeout: std::time::Duration,
@@ -7720,6 +8068,154 @@ fn probe_power_state(ctx: &Context, d: &DeviceRow) -> Option<String> {
         "off" => Some("off".into()),
         _ => None,
     }
+}
+
+/// How old a cached overrides reading may be before a caller that did not say
+/// otherwise gets a fresh one.
+///
+/// Every dashboard on the fleet asks the owner for this on a timer, and a read
+/// holds a single-session controller for seconds. Twenty seconds bounds that at
+/// one real read per controller per window however many dashboards are open. It
+/// only ever delays news of a change made OUTSIDE conminer: every conminer
+/// action that touches an override replaces the reading with its own readback.
+const OVERRIDES_DEFAULT_MAX_AGE_MS: i64 = 20_000;
+
+/// Read the boot-mode overrides this board's controller is holding. READ-ONLY.
+///
+/// `None` means the board has no way to read them (no controller, or a
+/// controller profile without a `boot_overrides` hook), which is a different
+/// answer from a read that failed: that one comes back as a reading whose every
+/// line is unknown, with the reason attached.
+///
+/// `max_age_ms <= 0` forces a real read.
+fn read_boot_overrides(
+    ctx: &Context,
+    d: &DeviceRow,
+    max_age_ms: i64,
+) -> Option<(crate::state::OverridesReading, &'static str)> {
+    use conminer_core::hooks;
+    use conminer_core::overrides::BootOverrides;
+    let present = present_with_topology(ctx);
+    let hook = ctx.config().boot_overrides_hook_for_at(
+        &d.canonical,
+        d.by_path.as_deref(),
+        present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
+    )?;
+    // The overrides belong to the BOARD: every console of it resolves the same
+    // controller instance and must see the same reading.
+    let key = hook
+        .controller
+        .clone()
+        .unwrap_or_else(|| d.canonical.clone());
+    let now = ctx.now();
+    if max_age_ms > 0 {
+        if let Some(r) = ctx.cached_overrides(&key) {
+            if now.saturating_sub(r.read_at_ms) <= max_age_ms {
+                return Some((r, "cached_controller_read"));
+            }
+        }
+    }
+    // Hooks get the canonical path, never the display name (see `power`).
+    let name = d.canonical.clone();
+    let controller = hook.controller.clone().unwrap_or_default();
+    // A PROBE, not an actuation: it only queries, and it shares an answer with
+    // anyone already queued on this controller for the SAME question.
+    let res = block_on(hooks::probe(
+        &hook.template,
+        &[
+            ("device", &name),
+            ("controller", &controller),
+            ("mode", ""),
+            ("action", ""),
+        ],
+        std::time::Duration::from_secs(20),
+    ));
+    let (overrides, error) = match res {
+        Ok(r) => {
+            let o = BootOverrides::parse(&r.stdout);
+            let why = o
+                .signals
+                .is_empty()
+                .then(|| "the read hook ran but reported no override lines".to_string());
+            (o, why)
+        }
+        // A failed read is unknown, never "nothing held". The controller not
+        // answering is the one situation in which assuming a normal boot is
+        // least justified.
+        Err(e) => (BootOverrides::unreadable(), Some(e.message)),
+    };
+    let reading = crate::state::OverridesReading {
+        overrides,
+        read_at_ms: ctx.now(),
+        error,
+        controller: Some(hook.source.clone()),
+        controller_port: hook.controller.clone(),
+    };
+    ctx.store_overrides(&key, reading.clone());
+    Some((reading, "controller_read"))
+}
+
+/// Render an overrides reading for a tool response.
+///
+/// Always carries `read_at_ms`, `age_ms` and `source`, so a cached reading can
+/// never be mistaken for one taken now; and always says in words what the state
+/// means for the next boot, because that is the question being asked.
+fn overrides_json(
+    ctx: &Context,
+    reading: Option<(crate::state::OverridesReading, &'static str)>,
+) -> Value {
+    use conminer_core::overrides::Summary;
+    let Some((r, source)) = reading else {
+        return json!({
+            "supported": false,
+            "state": "unsupported",
+            "why": "this board's controller has no `boot_overrides` read hook, so conminer \
+                    cannot see what it is holding. That is not evidence that nothing is held.",
+        });
+    };
+    let summary = r.overrides.summary();
+    let asserted = r.overrides.asserted();
+    let unknown = r.overrides.unknown();
+    let effect = match summary {
+        Summary::Latched => format!(
+            "the controller is HOLDING {}: it stays asserted across power cycles, so every \
+             boot goes where it points until it is released (boot_mode clear, or normal_boot)",
+            asserted.join(", ")
+        ),
+        Summary::Clear => "no boot-mode override is held: as far as the controller is concerned \
+                           the next boot is a normal one"
+            .to_string(),
+        Summary::Unknown => format!(
+            "the controller did not give a clean reading{}; this is NOT evidence that nothing \
+             is held",
+            match (&r.error, unknown.is_empty()) {
+                (Some(e), _) => format!(" ({e})"),
+                (None, false) => format!(" (unreadable: {})", unknown.join(", ")),
+                (None, true) => String::new(),
+            }
+        ),
+    };
+    let mut out = json!({
+        "supported": true,
+        "state": summary.as_str(),
+        "overrides": r.overrides.levels_json(),
+        "asserted": asserted,
+        "unknown": unknown,
+        "effect": effect,
+        "read_at_ms": r.read_at_ms,
+        "age_ms": ctx.now().saturating_sub(r.read_at_ms),
+        "source": source,
+        "controller": r.controller,
+        "controller_port": r.controller_port,
+        // Said in the payload because it is the distinction that matters: this
+        // is what the controller INTENDS for the next boot. Whether the board is
+        // in EDL right now is a USB observation and is reported elsewhere.
+        "is": "controller-read intent for the NEXT boot; not the board's observed USB state",
+    });
+    if let (Some(e), Some(o)) = (&r.error, out.as_object_mut()) {
+        o.insert("error".into(), json!(e));
+    }
+    out
 }
 
 /// Cap every array in an object payload, recording what was omitted.
@@ -8525,6 +9021,7 @@ mod tests {
         "bisect_start",
         "bisect_status",
         "boot_mode",
+        "boot_overrides",
         "boot_report",
         "boot_stages",
         "claim_exclusive",
@@ -8571,6 +9068,7 @@ mod tests {
         "name_device",
         "name_target",
         "noise",
+        "normal_boot",
         "peer_announce",
         "peer_poll",
         "peer_result",

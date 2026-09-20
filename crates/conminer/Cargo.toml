@@ -57,6 +57,10 @@ libc.workspace = true
 
 # §13 test-suite catalog — one named target per suite.
 [[test]]
+name = "boot-overrides"
+path = "tests/boot_overrides/main.rs"
+
+[[test]]
 name = "fleet"
 path = "tests/fleet/main.rs"
 

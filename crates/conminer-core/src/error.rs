@@ -88,6 +88,14 @@ pub enum ErrorCode {
     /// being flashed (report #23). Distinct from `NoPrompt`, which means the
     /// console is present but not at a prompt: here the console itself is gone.
     AwayInEdl,
+    /// A normal-boot workflow stopped BEFORE cycling power, because the boot-mode
+    /// overrides could not be released or could not be proven released.
+    ///
+    /// Its own code because what did NOT happen is the whole message: the board
+    /// was not power cycled, so whatever it was doing it is still doing. A caller
+    /// that read this as a generic hook failure would go looking for a boot that
+    /// never started. `detail.step` says which half failed.
+    NormalBootAborted,
     /// Low-level `send` passthrough is disabled by config.
     SendDisabled,
 
@@ -184,6 +192,10 @@ impl ErrorCode {
                 "the board is in EDL/flash mode; wait for it to leave recovery (poll \
                  console_state until capture_state is not away_in_edl), then retry"
             }
+            NormalBootAborted => {
+                "power was NOT cycled. detail.step says whether the clear or its readback \
+                 failed; read boot_overrides to see what the controller holds now"
+            }
             SendDisabled => "set runner.allow_raw_send=true to enable the passthrough",
             HookNotConfigured => "define the hook in conminer.toml under [devices.<id>.hooks]",
             HookFailed => "inspect the hook's exit code and stderr in the attached detail",
@@ -234,6 +246,7 @@ impl ErrorCode {
             ErrorCode::ExclusiveClaimed,
             ErrorCode::ActuationInFlight,
             ErrorCode::AwayInEdl,
+            ErrorCode::NormalBootAborted,
             ErrorCode::SendDisabled,
             ErrorCode::HookNotConfigured,
             ErrorCode::HookFailed,

@@ -125,9 +125,13 @@ fn n1_hooks_receive_the_canonical_path_not_a_nickname() {
         subs >= 4,
         "expected several hook substitutions, found {subs}"
     );
+    // Eight sites: power, boot_mode, flash, the power-state probe and the rest,
+    // plus the two that read and release boot overrides. A new hook site raises
+    // this number on purpose; one that builds its argument any other way does
+    // not, and that is the one this catches.
     assert_eq!(
         src.matches("let name = d.canonical.clone();").count(),
-        6,
+        8,
         "every hook site must take the canonical path"
     );
 }
