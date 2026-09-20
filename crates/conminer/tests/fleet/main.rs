@@ -2629,3 +2629,62 @@ fn the_published_controls_name_the_controller_that_drives_the_board() {
         "an ignored controller row is still the thing the board is named after"
     );
 }
+
+/// Whatever the image ships from the tree is part of the fingerprint.
+///
+/// The fingerprint is how a node says which code it is running, and "code"
+/// includes the hook scripts the image copies out of `tools/`: they run on the
+/// node as part of the service. They were not hashed, so a node carrying an
+/// older `bantam-power` under an unchanged fingerprint would have reported
+/// itself current while lacking an action the Rust side had started calling.
+///
+/// Derived from the Dockerfile rather than listed here, so the next `COPY` of
+/// something new fails this until the fingerprint covers it.
+#[test]
+fn everything_the_image_copies_from_the_tree_is_fingerprinted() {
+    let dockerfile =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Dockerfile"))
+            .expect("Dockerfile");
+    let cm = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cm")).expect("cm");
+    let hashed: Vec<&str> = cm
+        .lines()
+        .find(|l| l.trim_start().starts_with("find crates profiles.d"))
+        .expect("the build_id find line")
+        .split_whitespace()
+        .skip(1)
+        .take_while(|w| *w != "\\")
+        .collect();
+    let mut copied = Vec::new();
+    for line in dockerfile.lines().map(str::trim) {
+        let Some(rest) = line.strip_prefix("COPY ") else {
+            continue;
+        };
+        // Stage-to-stage copies are build products, not source.
+        if rest.starts_with("--from") {
+            continue;
+        }
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        // Every word but the last is a source path.
+        for src in &words[..words.len().saturating_sub(1)] {
+            let top = src
+                .trim_start_matches("./")
+                .split('/')
+                .next()
+                .unwrap_or_default();
+            if !top.is_empty() {
+                copied.push(top.to_string());
+            }
+        }
+    }
+    assert!(
+        copied.iter().any(|c| c == "tools"),
+        "precondition: the image does ship hook scripts from tools/: {copied:?}"
+    );
+    for top in &copied {
+        assert!(
+            hashed.contains(&top.as_str()),
+            "the image copies `{top}` from the tree, so the fingerprint must hash it: \
+             hashed = {hashed:?}"
+        );
+    }
+}
