@@ -1491,9 +1491,24 @@ fn a_full_screen_application_gets_a_real_grid() {
     // Scroll region, which is how vim keeps a status line still.
     assert!(page.contains(r#"case "r":"#), "no scroll region");
 
-    // The grid is what gets painted while it is active...
+    // The grid is what gets painted while it is active. The painter is
+    // incremental for scrollback and takes its own early branch for an
+    // application, so this reads that branch rather than one expression. What
+    // it draws is proven in a real browser by
+    // `browser::the_alternate_screen_round_trip_restores_the_scrollback`.
+    let paint = page
+        .split("  paint() {")
+        .nth(1)
+        .expect("the terminal painter");
+    let grid_branch = paint
+        .split("if (screen.active) {")
+        .nth(1)
+        .expect("paint must branch for an application that owns the terminal")
+        .split("return;")
+        .next()
+        .expect("and that branch must end the paint");
     assert!(
-        page.contains("screen.active ? screen.render() : this.lines"),
+        grid_branch.contains("screen.render()"),
         "paint must render the grid when an application owns the terminal"
     );
     // ...and scrollback must survive underneath, so :q returns the log.
@@ -1501,10 +1516,15 @@ fn a_full_screen_application_gets_a_real_grid() {
         page.contains("scrollback is kept untouched"),
         "leaving the alternate screen must restore the log, not clear it"
     );
-    // Auto-follow fights a fixed grid.
+    // Auto-follow fights a fixed grid: the application's branch returns before
+    // the painter ever touches the scroll position.
     assert!(
-        page.contains("!screen.active && state.follow"),
+        !grid_branch.contains("scrollTop"),
         "must not autoscroll a grid"
+    );
+    assert!(
+        paint.contains("state.follow"),
+        "the scrollback, by contrast, still follows"
     );
 }
 

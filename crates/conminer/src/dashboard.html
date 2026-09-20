@@ -1611,18 +1611,70 @@ const screen = {
   },
 };
 
+// The cost of a frame must not depend on how much history is on screen.
+//
+// `write` used to end in a full repaint: every WebSocket frame tore down and
+// rebuilt one <div> per scrollback line, with a forced layout before and after.
+// Frames are small (a UART hands over 16 to 64 bytes at a time; median 40 on the
+// bench), so a console that talks at all delivers tens of them a second, and a
+// board that never stops talking pins the scrollback at its cap. Measured in
+// chromium: 0.9 ms per frame at 100 lines, 6.5 ms at 1000, 23.9 ms at the
+// 4000-line cap. A 110 KB boot log is about 2750 frames, so the page spent over a
+// minute rendering what telnet showed in ten seconds, fell behind the socket,
+// and kept falling: the server delivered every byte on time (zero drift against
+// the board's own kernel timestamps) into a tab that could not keep up.
+//
+// Two rules fix it. Parsing happens per frame, because it is cheap and keeps
+// the model exact; PAINTING happens at most once per animation frame, because
+// nobody can see more than that. And a paint touches only the rows that
+// changed since the last one: output only ever rewrites the current line and
+// appends below it, so the dirty region is a suffix, and the cap only ever
+// trims a prefix.
 const term = {
   lines: [[]], col: 0, cls: "", cap: 4000, dec: new TextDecoder("utf-8", { fatal: false }),
-  raw: [],
+  raw: [], rawBytes: 0, rawCap: 16 * 1024 * 1024,
+  // `base` is the absolute index of lines[0]; it only grows, as the cap trims
+  // the oldest lines. The DOM mirrors absolute rows from `domBase`, and `dirty`
+  // is the oldest absolute row touched since the last paint.
+  base: 0, domBase: 0, dirty: 0, full: true, pending: false, scheduled: false,
+  paints: 0,
 
   reset() {
-    this.lines = [[]]; this.col = 0; this.cls = ""; this.raw = [];
+    this.lines = [[]]; this.col = 0; this.cls = "";
+    this.raw = []; this.rawBytes = 0;
+    this.base = 0; this.domBase = 0; this.dirty = 0; this.full = true;
+    this.pending = false;
     screen.leave();
     $("term").innerHTML = "";
   },
 
-  write(bytes) {
+  /// Keep the bytes for "save", but not forever: a console left open on a board
+  /// that never stops talking would otherwise grow this tab without bound.
+  keep(bytes) {
     this.raw.push(bytes);
+    this.rawBytes += bytes.length;
+    while (this.rawBytes > this.rawCap && this.raw.length > 1) {
+      this.rawBytes -= this.raw.shift().length;
+    }
+  },
+
+  /// Ask for a paint on the next animation frame. Any number of frames arriving
+  /// before it share that one paint. A hidden tab gets no animation frames, so
+  /// its model keeps up for free and it paints once when it is looked at again.
+  schedule() {
+    this.pending = true;
+    if (this.scheduled) return;
+    this.scheduled = true;
+    requestAnimationFrame(() => { this.scheduled = false; this.paint(); });
+  },
+
+  /// Paint now. For callers that are about to read the DOM.
+  flush() { this.paint(); },
+
+  write(bytes) {
+    this.keep(bytes);
+    // Everything from the current line down may change; nothing above it can.
+    this.dirty = Math.min(this.dirty, this.base + this.lines.length - 1);
     const text = this.dec.decode(bytes, { stream: true });
     let i = 0;
     while (i < text.length) {
@@ -1660,7 +1712,7 @@ const term = {
       this.put(text.slice(i, j));
       i = j;
     }
-    this.paint();
+    this.schedule();
   },
 
   /// Handle a CSI sequence. Returns true when it was consumed here.
@@ -1684,7 +1736,10 @@ const term = {
       } else if (final === "l") {
         screen.leave();
       }
-      this.paint();
+      // The grid and the scrollback are different documents: switching between
+      // them is the one case where every row really is new.
+      this.full = true;
+      this.schedule();
       return true;
     }
     if (params.startsWith("?")) return true; // other private modes: cursor vis etc.
@@ -1745,7 +1800,12 @@ const term = {
 
   newline() {
     this.lines.push([]); this.col = 0;
-    if (this.lines.length > this.cap) this.lines.splice(0, this.lines.length - this.cap);
+    if (this.lines.length > this.cap) {
+      const drop = this.lines.length - this.cap;
+      this.lines.splice(0, drop);
+      // The painter removes the same rows from the top of the DOM.
+      this.base += drop;
+    }
   },
 
   sgr(params) {
@@ -1759,32 +1819,91 @@ const term = {
     }
   },
 
-  paint() {
-    const el = $("term");
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    const frag = document.createDocumentFragment();
-    // While a full-screen application owns the terminal, paint ITS grid. The
-    // scrollback is kept untouched underneath and returns intact on :q.
-    const source = screen.active ? screen.render() : this.lines;
-    for (const line of source) {
-      const div = document.createElement("div");
-      for (const span of line) {
-        if (!span.t) continue;
-        if (span.c) {
-          const s = document.createElement("span");
-          s.className = span.c; s.textContent = span.t; div.appendChild(s);
-        } else {
-          div.appendChild(document.createTextNode(span.t));
-        }
+  /// One row of the terminal as a DOM node.
+  row(line) {
+    const div = document.createElement("div");
+    for (const span of line) {
+      if (!span.t) continue;
+      if (span.c) {
+        const s = document.createElement("span");
+        s.className = span.c; s.textContent = span.t; div.appendChild(s);
+      } else {
+        div.appendChild(document.createTextNode(span.t));
       }
-      if (!line.length) div.appendChild(document.createTextNode("​"));
-      frag.appendChild(div);
     }
-    el.innerHTML = "";
-    el.appendChild(frag);
+    if (!line.length) div.appendChild(document.createTextNode("​"));
+    return div;
+  },
+
+  paint() {
+    if (!this.pending && !this.full) return;
+    this.pending = false;
+    this.paints++;
+    const el = $("term");
+
+    // While a full-screen application owns the terminal, paint ITS grid. The
+    // scrollback is kept untouched underneath and returns intact on :q. The
+    // grid is a screenful, so rebuilding it is cheap and stays simple; the next
+    // scrollback paint after it has to be a full one, because none of these
+    // rows are scrollback rows.
+    if (screen.active) {
+      const frag = document.createDocumentFragment();
+      for (const line of screen.render()) frag.appendChild(this.row(line));
+      el.innerHTML = "";
+      el.appendChild(frag);
+      this.full = true;
+      return;
+    }
+
+    // Read once, BEFORE mutating: asking after would force a second layout.
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    const end = this.base + this.lines.length;
+
+    // A burst can trim more rows than the DOM ever held; nothing there is
+    // current any more, so start again rather than reconcile.
+    if (!this.full && this.base - this.domBase >= el.childElementCount) this.full = true;
+
+    let start;
+    if (this.full) {
+      el.innerHTML = "";
+      this.domBase = this.base;
+      start = this.base;
+      this.full = false;
+    } else {
+      // The cap trimmed these off the model; take the same rows off the top.
+      for (let drop = this.base - this.domBase; drop > 0; drop--) el.removeChild(el.firstChild);
+      this.domBase = this.base;
+      start = Math.max(this.dirty, this.base);
+    }
+
+    // Rows that already have a node are replaced in place; the rest are new and
+    // go in together, so however much arrived costs one insertion.
+    // The dirty rows are a suffix, so they are found by walking back from the
+    // end: indexing a live collection from the front would make every paint cost
+    // the whole scrollback again, which is the thing being fixed.
+    const have = this.domBase + el.childElementCount;
+    let node = null;
+    if (have > start) {
+      node = el.lastElementChild;
+      for (let k = have - start; k > 1; k--) node = node.previousElementSibling;
+    }
+    const fresh = document.createDocumentFragment();
+    for (let abs = start; abs < end; abs++) {
+      const div = this.row(this.lines[abs - this.base]);
+      if (node) {
+        const next = node.nextElementSibling;
+        el.replaceChild(div, node);
+        node = next;
+      } else {
+        fresh.appendChild(div);
+      }
+    }
+    el.appendChild(fresh);
+    this.dirty = Infinity;
+
     // An application addresses a fixed grid: there is nothing to follow, and
     // auto-scrolling fights the cursor.
-    if (!screen.active && state.follow && atBottom !== false) {
+    if (state.follow && atBottom !== false) {
       el.scrollTop = el.scrollHeight;
     }
   },

@@ -13,6 +13,7 @@
 
 use conminer_core::config::Config;
 use conminer_core::store::{IdentityKind, Registry};
+use serde_json::Value;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -2316,5 +2317,488 @@ fn an_unnamed_peer_controller_still_beats_a_raw_peer_path() {
         vec!["alpha usb-Microchip_Bantam_CTRL0001-if00".to_string()],
         "an unnamed controller is headed by its node and the by-id tail, never \
          by the full peer path"
+    );
+}
+
+// ------------------------------------------------ the terminal must keep up ---
+
+/// A port that TALKS: small chunks, as a UART hands them over, then a marker.
+///
+/// `FakePort` only listens, which is all a TX test needs. Rendering cost is
+/// about the other direction, and it depends on how the bytes ARRIVE: a console
+/// delivers tens of tiny frames a second, not one tidy buffer.
+struct ChattyPort {
+    port: u16,
+}
+
+impl ChattyPort {
+    /// Serve `chunks` frames of `chunk` bytes, a newline every eighth, then
+    /// `marker`. Each chunk is flushed on its own so it reaches the page as its
+    /// own frame.
+    fn start(chunks: usize, chunk: &'static str, marker: &'static str) -> Self {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut s = stream;
+                let _ = s.set_nodelay(true);
+                std::thread::spawn(move || {
+                    // Let the viewer attach before the burst begins.
+                    std::thread::sleep(Duration::from_millis(400));
+                    for i in 0..chunks {
+                        let nl = if i % 8 == 7 { "\r\n" } else { "" };
+                        if s.write_all(format!("{chunk}{nl}").as_bytes()).is_err() {
+                            return;
+                        }
+                        let _ = s.flush();
+                        // PACED, like the UART it stands in for. Written back to
+                        // back, TCP coalesces these into a few large reads and the
+                        // page sees a handful of frames: the first version of this
+                        // fixture did exactly that, and the gate built on it passed
+                        // against the very painter it exists to catch.
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    let _ = s.write_all(format!("\r\n{marker}\r\n").as_bytes());
+                    let _ = s.flush();
+                    // Hold the socket: a close would make the page reconnect.
+                    std::thread::sleep(Duration::from_secs(120));
+                });
+            }
+        });
+        Self { port }
+    }
+}
+
+const ONE_BOARD: &[(&str, &str)] = &[(
+    "/dev/serial/by-id/usb-FTDI_ClickBoard_CCCC-if00-port0",
+    "pci-0000:00:14.0-usb-0:7.1.1:1.0",
+)];
+
+/// Evaluate `body` (the inside of a Promise executor taking `r`) on a loaded
+/// dashboard with the console pane showing, and return its JSON.
+fn on_terminal(browser: &cdp::Browser, base: &str, body: &str, budget: Duration) -> Value {
+    let expr = format!(
+        r#"(() => new Promise(r => {{
+            const enc = new TextEncoder();
+            const el = document.getElementById("term");
+            document.getElementById("console").classList.remove("hidden");
+            const frame = () => new Promise(f => requestAnimationFrame(() => requestAnimationFrame(f)));
+            const fill = (n) => {{
+              let s = "";
+              for (let i = 0; i < n; i++) s += `[ ${{i}}.000000] scmi_protocol scmi_dev.6: Message for 44 type 0 is not expected!\r\n`;
+              term.write(enc.encode(s));
+            }};
+            {body}
+        }}))()"#
+    );
+    let out = browser.eval_within(
+        &format!("{base}/?nostream=1"),
+        Duration::from_millis(1500),
+        &expr,
+        budget,
+    );
+    serde_json::from_str(out.as_str().unwrap_or("null")).unwrap_or(Value::Null)
+}
+
+/// The cost of a frame must not depend on how much history is on screen.
+///
+/// Reported from the bench as "the web UI is very, very slow, and on telnet it
+/// is fast". The server was innocent: a passive second viewer on the live
+/// console received every byte with zero drift against the board's own kernel
+/// timestamps. The page was not. `term.write` ended in a full repaint, so every
+/// WebSocket frame rebuilt one <div> per scrollback line with a forced layout
+/// either side. Measured in chromium: 0.9 ms per frame at 100 lines, 6.5 ms at
+/// 1000, 23.9 ms at the 4000-line cap, and a board that never stops talking
+/// keeps the scrollback pinned at the cap. A boot log of about 2750 frames then
+/// took over a minute to draw.
+///
+/// 300 frames into a full scrollback cost 7 s before. The bound is generous on
+/// purpose: it has to fail the old painter on a fast machine and pass the new
+/// one on a slow one, and there are two orders of magnitude between them.
+#[test]
+fn a_console_frame_costs_the_same_at_any_scrollback_depth() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_at(ONE_BOARD);
+    let v = on_terminal(
+        &browser,
+        &rig.base,
+        r#"
+        (async () => {
+          term.reset(); fill(4000); term.flush();
+          const t0 = performance.now();
+          for (let i = 0; i < 300; i++) term.write(enc.encode(`[ 9${i}.123456] scmi_protocol scmi_dev.6: M`));
+          term.flush();
+          void el.scrollHeight;
+          const ms = performance.now() - t0;
+          r(JSON.stringify({ms, rows: el.childElementCount,
+                            last: el.lastElementChild.textContent.slice(-40)}));
+        })();
+        "#,
+        Duration::from_secs(120),
+    );
+    assert_eq!(
+        v["rows"], 4000,
+        "precondition: the scrollback must be at its cap: {v}"
+    );
+    assert!(
+        v["last"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("scmi_dev.6: M"),
+        "precondition: the frames must actually have been drawn: {v}"
+    );
+    let ms = v["ms"].as_f64().unwrap_or(f64::MAX);
+    eprintln!("terminal: 300 frames into a full scrollback took {ms:.1} ms");
+    assert!(
+        ms < 1500.0,
+        "300 small frames into a full scrollback took {ms:.0} ms; the painter is \
+         paying for history again (it was 7000 ms when every frame rebuilt it): {v}"
+    );
+}
+
+/// Many frames, one paint, and only the rows that changed.
+///
+/// The structural half of the gate above, and the one that cannot be flattered
+/// by a fast machine: a row the output never touched must be the same node
+/// afterwards, and a burst that lands inside one animation frame must cost one
+/// paint however many frames it was.
+#[test]
+fn a_burst_of_frames_is_painted_once_and_only_where_it_changed() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_at(ONE_BOARD);
+    let v = on_terminal(
+        &browser,
+        &rig.base,
+        r#"
+        (async () => {
+          term.reset(); fill(500); term.flush();
+          await frame();
+          const first = el.firstElementChild, mid = el.children[250];
+          const before = term.paints;
+          for (let i = 0; i < 200; i++) term.write(enc.encode("x"));
+          term.write(enc.encode(" BURST-END\r\n"));
+          const drawn_synchronously = el.textContent.includes("BURST-END");
+          await frame();
+          r(JSON.stringify({
+            paints: term.paints - before,
+            drawn_synchronously,
+            drawn: el.textContent.includes("x".repeat(200) + " BURST-END"),
+            first_kept: el.firstElementChild === first,
+            mid_kept: el.children[250] === mid,
+            rows: el.childElementCount, lines: term.lines.length,
+          }));
+        })();
+        "#,
+        Duration::from_secs(60),
+    );
+    assert_eq!(
+        v["drawn"], true,
+        "the burst must end up on screen, whole: {v}"
+    );
+    assert_eq!(
+        v["paints"], 1,
+        "201 frames inside one animation frame are one paint, not 201: {v}"
+    );
+    assert_eq!(
+        v["drawn_synchronously"], false,
+        "a paint per frame is the bug; drawing belongs to the animation frame: {v}"
+    );
+    assert_eq!(
+        v["first_kept"], true,
+        "an untouched row must not be rebuilt: {v}"
+    );
+    assert_eq!(
+        v["mid_kept"], true,
+        "an untouched row must not be rebuilt: {v}"
+    );
+    assert_eq!(
+        v["rows"], v["lines"],
+        "the DOM must mirror the model row for row: {v}"
+    );
+}
+
+/// The cap trims the top of the DOM; it does not rebuild what stays.
+///
+/// This is the steady state of a board that never stops talking: every new
+/// line pushes one off the top. If that fell back to a full rebuild the fix
+/// would hold everywhere except the one case that was reported.
+#[test]
+fn the_scrollback_cap_trims_the_top_without_rebuilding_the_rest() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_at(ONE_BOARD);
+    let v = on_terminal(
+        &browser,
+        &rig.base,
+        r#"
+        (async () => {
+          term.reset(); fill(term.cap + 50); term.flush();
+          await frame();
+          const held = el.children[100];
+          const held_text = held.textContent;
+          const before = term.paints;
+          for (let i = 0; i < 7; i++) term.write(enc.encode(`trim-line-${i}\r\n`));
+          await frame();
+          r(JSON.stringify({
+            rows: el.childElementCount, cap: term.cap,
+            paints: term.paints - before,
+            // Seven rows came off the top, so the held row moved up by seven
+            // and is still the very same node.
+            held_moved: el.children[93] === held,
+            held_text_kept: el.children[93].textContent === held_text,
+            tail: el.children[el.childElementCount - 2].textContent,
+            model_matches: [...el.children].every((n, i) =>
+              n.textContent === (term.lines[i].map(x => x.t).join("") || "\u200b")),
+          }));
+        })();
+        "#,
+        Duration::from_secs(60),
+    );
+    assert_eq!(
+        v["rows"], v["cap"],
+        "the DOM must hold exactly the cap: {v}"
+    );
+    assert_eq!(
+        v["held_moved"], true,
+        "a surviving row must be the same node, shifted: {v}"
+    );
+    assert_eq!(v["held_text_kept"], true, "{v}");
+    assert_eq!(
+        v["tail"], "trim-line-6",
+        "the newest line must be the last full row: {v}"
+    );
+    assert_eq!(v["paints"], 1, "{v}");
+    assert_eq!(
+        v["model_matches"], true,
+        "after trimming, every DOM row must still be the model's row: {v}"
+    );
+}
+
+/// A burst bigger than the whole scrollback must not leave stale rows behind.
+#[test]
+fn a_burst_larger_than_the_scrollback_replaces_it_entirely() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_at(ONE_BOARD);
+    let v = on_terminal(
+        &browser,
+        &rig.base,
+        r#"
+        (async () => {
+          term.reset();
+          term.write(enc.encode("OLD-ROW-A\r\nOLD-ROW-B\r\n")); term.flush();
+          await frame();
+          let s = ""; for (let i = 0; i < term.cap + 500; i++) s += `new-${i}\r\n`;
+          term.write(enc.encode(s));
+          await frame();
+          r(JSON.stringify({
+            rows: el.childElementCount, cap: term.cap,
+            stale: el.textContent.includes("OLD-ROW"),
+            first: el.firstElementChild.textContent,
+            model_first: term.lines[0].map(x => x.t).join(""),
+          }));
+        })();
+        "#,
+        Duration::from_secs(60),
+    );
+    assert_eq!(v["rows"], v["cap"], "{v}");
+    assert_eq!(
+        v["stale"], false,
+        "rows the cap trimmed must be gone from the page: {v}"
+    );
+    assert_eq!(v["first"], v["model_first"], "{v}");
+}
+
+/// Leaving a full-screen application brings the scrollback back intact.
+///
+/// The grid and the scrollback are different documents sharing one element, so
+/// the switch is the one place a full rebuild is right, and it has to happen in
+/// BOTH directions: an incremental paint after `:q` would splice scrollback
+/// rows into whatever vim left on screen.
+#[test]
+fn the_alternate_screen_round_trip_restores_the_scrollback() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_at(ONE_BOARD);
+    let v = on_terminal(
+        &browser,
+        &rig.base,
+        r#"
+        (async () => {
+          term.reset();
+          term.write(enc.encode("before-one\r\nbefore-two\r\n$ vim\r\n"));
+          await frame();
+          term.write(enc.encode("\x1b[?1049h\x1b[2J\x1b[1;1HVIM-SCREEN-TEXT"));
+          await frame();
+          const in_app = {grid: el.textContent.includes("VIM-SCREEN-TEXT"),
+                          scrollback_hidden: !el.textContent.includes("before-one")};
+          term.write(enc.encode("\x1b[?1049l"));
+          term.write(enc.encode("after-quit\r\n"));
+          await frame();
+          r(JSON.stringify({
+            in_app,
+            back: el.textContent.includes("before-one") && el.textContent.includes("before-two"),
+            grid_gone: !el.textContent.includes("VIM-SCREEN-TEXT"),
+            after: el.textContent.includes("after-quit"),
+            rows: el.childElementCount, lines: term.lines.length,
+          }));
+        })();
+        "#,
+        Duration::from_secs(60),
+    );
+    assert_eq!(
+        v["in_app"]["grid"], true,
+        "the application's screen must be drawn: {v}"
+    );
+    assert_eq!(v["in_app"]["scrollback_hidden"], true, "{v}");
+    assert_eq!(v["back"], true, "the scrollback must return intact: {v}");
+    assert_eq!(
+        v["grid_gone"], true,
+        "and the application's screen must be gone: {v}"
+    );
+    assert_eq!(v["after"], true, "{v}");
+    assert_eq!(v["rows"], v["lines"], "{v}");
+}
+
+/// The bytes kept for "save" are bounded, newest kept.
+///
+/// A console left open on a board that never stops talking grew this without
+/// limit, a tab's worth of memory per day on the bench's chattiest console.
+#[test]
+fn the_saved_console_bytes_are_bounded_and_keep_the_newest() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_at(ONE_BOARD);
+    let v = on_terminal(
+        &browser,
+        &rig.base,
+        r#"
+        (async () => {
+          term.reset();
+          term.rawCap = 4096;
+          for (let i = 0; i < 400; i++) term.write(enc.encode(`line-${i}-${"p".repeat(40)}\r\n`));
+          const blob = await new Blob(term.raw).text();
+          r(JSON.stringify({bytes: term.rawBytes, cap: term.rawCap,
+                            newest: blob.includes("line-399-"), oldest: blob.includes("line-0-")}));
+        })();
+        "#,
+        Duration::from_secs(60),
+    );
+    assert!(
+        v["bytes"].as_u64().unwrap_or(u64::MAX) <= v["cap"].as_u64().unwrap_or(0) + 64,
+        "the save buffer must stay within its budget: {v}"
+    );
+    assert_eq!(v["newest"], true, "and keep what was said last: {v}");
+    assert_eq!(
+        v["oldest"], false,
+        "at the expense of what was said first: {v}"
+    );
+}
+
+/// End to end, through the real socket: a chatty console is on screen promptly.
+///
+/// The gates above drive `term.write` directly. This one sends 1500 small
+/// chunks the way a UART does, through dashd and the page's own WebSocket, into
+/// a scrollback already at its cap, and requires the last of them on screen
+/// within seconds. Every frame used to cost a full rebuild of 4000 rows, which
+/// put this at over half a minute.
+#[test]
+fn a_chatty_console_is_drawn_as_fast_as_it_arrives() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let console = "/dev/serial/by-id/usb-FTDI_ClickBoard_CCCC-if00-port0";
+    let port = ChattyPort::start(
+        1500,
+        "[  146.284938] scmi_protocol scmi_dev.6: M",
+        "CHATTY-END-MARKER",
+    );
+    let rig = Rig::start_with_console_on(console, port.port);
+    let probe = r#"
+      (() => new Promise(r => {
+        const enc = new TextEncoder();
+        const t0 = Date.now();
+        const tick = () => {
+          const d = state.devices.find(x => x.device.includes("CCCC-if00"));
+          if (!d || !d.port) {
+            if (Date.now() - t0 > 15000) r(JSON.stringify({error: "no console"}));
+            else setTimeout(tick, 100);
+            return;
+          }
+          // Start from the reported condition: a scrollback already at its cap.
+          let s = "";
+          for (let i = 0; i < term.cap; i++) s += `[ ${i}.000000] history line ${i} of a board that never stops talking\r\n`;
+          openConsole(d);
+          term.write(enc.encode(s));
+          const opened = performance.now();
+          const wait = () => {
+            const el = document.getElementById("term");
+            if (el.textContent.includes("CHATTY-END-MARKER")) {
+              r(JSON.stringify({ms: performance.now() - opened, paints: term.paints,
+                                frames: term.raw.length, rows: el.childElementCount}));
+            } else if (performance.now() - opened > 60000) {
+              r(JSON.stringify({error: "marker never drawn", paints: term.paints}));
+            } else setTimeout(wait, 50);
+          };
+          wait();
+        };
+        tick();
+      }))()
+    "#;
+    let out = browser.eval_within(
+        &format!("{}/", rig.base),
+        Duration::from_millis(1500),
+        probe,
+        Duration::from_secs(90),
+    );
+    let v: Value = serde_json::from_str(out.as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert!(v.get("error").is_none(), "{v}");
+    // PRECONDITION: the page really did receive many small frames. Without this
+    // the gate measures nothing: a burst that arrives as a few large frames is
+    // cheap under ANY painter.
+    assert!(
+        v["frames"].as_u64().unwrap_or(0) > 500,
+        "the fixture must deliver many small frames, as a UART does, or this proves \
+         nothing about the cost of a frame: {v}"
+    );
+    let ms = v["ms"].as_f64().unwrap_or(f64::MAX);
+    eprintln!(
+        "chatty console: {} frames on screen in {ms:.0} ms",
+        v["frames"]
+    );
+    assert!(
+        ms < 12000.0,
+        "1500 small frames through the socket took {ms:.0} ms to reach the screen; \
+         with a full scrollback that was over 30 s when every frame rebuilt it: {v}"
     );
 }
