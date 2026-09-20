@@ -159,10 +159,20 @@ pub async fn probe(template: &str, subs: &[(&str, &str)], timeout: Duration) -> 
     let Some(key) = lock_key(subs) else {
         return run(template, subs, timeout).await;
     };
+    // An answer is only shareable with someone who asked the same question.
+    //
+    // The slot is per controller, and for as long as power was the only thing
+    // anyone probed that was enough. A second kind of read on the same
+    // controller (its boot-mode overrides) made it wrong: two askers queued
+    // together, and the second was handed the first one's stdout, so a power
+    // probe could be answered with strap levels and a strap read with "on".
+    // Both parse to "unknown", which is why it would have looked like a flaky
+    // controller rather than a bug.
+    let question = render(template, subs).join(" ");
     let cell = controller_lock(&key);
     let mut slot = cell.lock().await;
     if let Some((done_at, result)) = slot.as_ref() {
-        if *done_at >= arrived {
+        if *done_at >= arrived && result.command == question {
             return Ok(result.clone());
         }
     }
@@ -354,6 +364,45 @@ mod tests {
         assert_eq!(
             runs, 1,
             "three simultaneous probes must cost one hook run, not {runs}"
+        );
+    }
+
+    /// An answer is shared only with someone who asked the same question.
+    ///
+    /// The shared slot is per controller, which was enough while power was the
+    /// only thing anyone probed. A second read on the same controller (its
+    /// boot-mode overrides) queues behind the first, finds an answer that landed
+    /// after it arrived, and takes it: a strap read answered with "on", a power
+    /// probe answered with strap levels. Both parse to "unknown", so it would
+    /// have shown up as a controller that flickers to unknown whenever two
+    /// dashboards happen to ask together, and been blamed on the hardware.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_probe_is_never_answered_with_another_questions_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("two.sh");
+        // Slow enough that the second asker is queued while the first runs.
+        std::fs::write(&script, "#!/bin/sh\nsleep 1\necho \"answer-to-$1\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let power = format!("{} power-state", script.display());
+        let straps = format!("{} boot-overrides", script.display());
+        let subs = [("controller", "/dev/ctlTwoQuestions")];
+        let (a, b) = tokio::join!(
+            super::probe(&power, &subs, super::Duration::from_secs(20)),
+            super::probe(&straps, &subs, super::Duration::from_secs(20)),
+        );
+        assert_eq!(
+            a.expect("power").stdout.trim(),
+            "answer-to-power-state",
+            "the power probe must get the power answer"
+        );
+        assert_eq!(
+            b.expect("straps").stdout.trim(),
+            "answer-to-boot-overrides",
+            "and the overrides read must get its own, not whichever finished first"
         );
     }
 
