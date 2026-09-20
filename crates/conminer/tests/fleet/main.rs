@@ -2579,6 +2579,7 @@ fn the_published_controls_name_the_controller_that_drives_the_board() {
         power: None,
         boot_mode: None,
         boot_overrides: None,
+        boot_mode_release: None,
         flash: None,
         boot_modes: Vec::new(),
         power_timeout_s: None,

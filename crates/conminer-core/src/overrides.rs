@@ -86,6 +86,12 @@ impl Summary {
 pub struct BootOverrides {
     /// In the order the controller reported them.
     pub signals: Vec<(String, Level)>,
+    /// `(mode, line)`: which boot mode holds which line, as the HOOK declared it.
+    ///
+    /// From the hook and nowhere else, because the hook is what turns a mode
+    /// into a line when it sets one. A second copy of that table in a config
+    /// file is a copy that can light the wrong button.
+    pub modes: Vec<(String, String)>,
 }
 
 impl BootOverrides {
@@ -95,18 +101,35 @@ impl BootOverrides {
     /// trailer. A NAME is upper-case letters, digits and underscores, which is
     /// what a signal is called on every controller this has met and is narrow
     /// enough that prose is never mistaken for one.
+    ///
+    /// A hook may also say which boot mode holds which line, one
+    /// `mode <MODE> asserts <LINE>` per mode. Optional: without it the lines are
+    /// still reported, and no mode can be shown as held.
     pub fn parse(stdout: &str) -> Self {
+        let is_name = |name: &str| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        };
         let mut signals: Vec<(String, Level)> = Vec::new();
+        let mut modes: Vec<(String, String)> = Vec::new();
         for line in stdout.lines() {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            if let ["mode", mode, "asserts", held] = words[..] {
+                if is_name(mode) && is_name(held) {
+                    let pair = (mode.to_string(), held.to_string());
+                    if !modes.contains(&pair) {
+                        modes.push(pair);
+                    }
+                }
+                continue;
+            }
             let Some((name, value)) = line.trim().split_once('=') else {
                 continue;
             };
             let name = name.trim();
-            let is_signal = !name.is_empty()
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
-            if !is_signal {
+            if !is_name(name) {
                 continue;
             }
             let level = Level::parse(value);
@@ -117,7 +140,7 @@ impl BootOverrides {
                 None => signals.push((name.to_string(), level)),
             }
         }
-        Self { signals }
+        Self { signals, modes }
     }
 
     /// The read produced nothing at all: the hook failed, timed out, or printed
@@ -159,6 +182,51 @@ impl BootOverrides {
     /// to be a normal one, and "the controller did not say" is not that.
     pub fn all_released(&self) -> bool {
         self.summary() == Summary::Clear
+    }
+
+    /// Is this boot mode held? `None` when the hook never said which line the
+    /// mode holds: a mode that holds nothing (a firmware sequence), or a hook
+    /// that does not declare its table.
+    ///
+    /// Held and released are both PROVEN, by a clean read of the mode's own
+    /// line. Everything else is unknown: a line the hook named and did not
+    /// report, a line that did not read cleanly, and a mode the hook mapped to
+    /// two different lines.
+    pub fn mode_level(&self, mode: &str) -> Option<Level> {
+        let mut lines = self.modes.iter().filter(|(m, _)| m == mode).map(|(_, l)| l);
+        let line = lines.next()?;
+        if lines.next().is_some() {
+            return Some(Level::Unknown);
+        }
+        Some(
+            self.signals
+                .iter()
+                .find(|(n, _)| n == line)
+                .map(|(_, level)| *level)
+                .unwrap_or(Level::Unknown),
+        )
+    }
+
+    /// `{"BOOT_MD_EDL": {"line": "MD_EDL", "state": "held"}}`, one entry per
+    /// mode the hook declared. `state` is `held`, `released` or `unknown`.
+    pub fn modes_json(&self) -> Value {
+        let mut out = serde_json::Map::new();
+        for (mode, line) in &self.modes {
+            let state = match self.mode_level(mode) {
+                Some(Level::Asserted) => "held",
+                Some(Level::Released) => "released",
+                _ => "unknown",
+            };
+            let ambiguous = self.modes.iter().filter(|(m, _)| m == mode).count() > 1;
+            out.insert(
+                mode.clone(),
+                json!({
+                    "line": if ambiguous { Value::Null } else { json!(line) },
+                    "state": state,
+                }),
+            );
+        }
+        Value::Object(out)
     }
 
     /// `{"MD_EDL": 1, "SS_EDL": 0, "UEFI": null}`.
@@ -242,6 +310,75 @@ mod tests {
         let o = BootOverrides::parse("MD_EDL=0\nMD_EDL=1\n");
         assert_eq!(o.signals, vec![("MD_EDL".to_string(), Level::Unknown)]);
         assert!(!o.all_released());
+    }
+
+    /// What lights a button. Held and released are each proven by the mode's
+    /// own line; nothing else is.
+    #[test]
+    fn a_mode_is_held_only_when_its_own_line_reads_asserted() {
+        let o = BootOverrides::parse(
+            "MD_EDL=1\nSS_EDL=0\nUEFI=?\n\
+             mode BOOT_MD_EDL asserts MD_EDL\n\
+             mode BOOT_SS_EDL asserts SS_EDL\n\
+             mode BOOT_UEFI asserts UEFI\n\
+             mode MD_FASTBOOT asserts FASTBOOT_MD\n",
+        );
+        assert_eq!(o.mode_level("BOOT_MD_EDL"), Some(Level::Asserted));
+        assert_eq!(o.mode_level("BOOT_SS_EDL"), Some(Level::Released));
+        assert_eq!(
+            o.mode_level("BOOT_UEFI"),
+            Some(Level::Unknown),
+            "its line did not read cleanly"
+        );
+        assert_eq!(
+            o.mode_level("MD_FASTBOOT"),
+            Some(Level::Unknown),
+            "the hook named a line and never reported it: that is not released"
+        );
+        assert_eq!(
+            o.mode_level("SS_MD_FASTBOOT"),
+            None,
+            "a mode the hook did not map holds nothing to show"
+        );
+        assert_eq!(
+            o.modes_json(),
+            json!({
+                "BOOT_MD_EDL": {"line": "MD_EDL", "state": "held"},
+                "BOOT_SS_EDL": {"line": "SS_EDL", "state": "released"},
+                "BOOT_UEFI": {"line": "UEFI", "state": "unknown"},
+                "MD_FASTBOOT": {"line": "FASTBOOT_MD", "state": "unknown"},
+            })
+        );
+        // The mode table changes nothing about the lines or the summary.
+        assert_eq!(o.asserted(), vec!["MD_EDL"]);
+        assert_eq!(o.summary(), Summary::Latched);
+    }
+
+    #[test]
+    fn a_mode_mapped_to_two_lines_is_not_knowledge() {
+        let o = BootOverrides::parse(
+            "MD_EDL=0\nSS_EDL=0\nmode BOOT_MD_EDL asserts MD_EDL\nmode BOOT_MD_EDL asserts SS_EDL\n",
+        );
+        assert_eq!(o.mode_level("BOOT_MD_EDL"), Some(Level::Unknown));
+        assert_eq!(
+            o.modes_json(),
+            json!({"BOOT_MD_EDL": {"line": null, "state": "unknown"}})
+        );
+    }
+
+    #[test]
+    fn a_mode_line_is_never_mistaken_for_a_signal_and_prose_is_never_a_mode() {
+        let o = BootOverrides::parse(
+            "mode BOOT_MD_EDL asserts MD_EDL\nmode is fine\nmode lower asserts MD_EDL\n\
+             mode BOOT_UEFI asserts UEFI and more\nMD_EDL=0\n",
+        );
+        assert_eq!(o.signals, vec![("MD_EDL".to_string(), Level::Released)]);
+        assert_eq!(
+            o.modes,
+            vec![("BOOT_MD_EDL".to_string(), "MD_EDL".to_string())]
+        );
+        // A failed read declares nothing, so nothing can be shown as released.
+        assert_eq!(BootOverrides::unreadable().mode_level("BOOT_MD_EDL"), None);
     }
 
     #[test]

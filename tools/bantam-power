@@ -23,7 +23,9 @@
 #     through shell `read` and correct values through a bounded `cat` drain.
 #
 # Usage:  bantam-power <on|off|cycle|reset|id|state> --port <dev> [--settle N]
-#         bantam-power mode <BOOT_MD_EDL|BOOT_UEFI|MD_FASTBOOT|...> --port <dev>
+#         bantam-power mode <BOOT_MD_EDL|BOOT_UEFI|MD_FASTBOOT|...|clear> --port <dev>
+#         bantam-power mode-release <MODE> --port <dev>
+#         bantam-power boot-overrides --port <dev>
 #         bantam-power get <SIGNAL> | set <SIGNAL> <0|1>
 set -eu
 
@@ -57,11 +59,31 @@ OFF_SETTLE="${BANTAM_OFF_SETTLE:-6}"
 LOCK="${BANTAM_LOCK:-/run/conminer/bantam.lock}"
 FAILED=0
 
-# The boot-mode overrides this controller can hold. ONE list, used by the read
-# and by the clear, so the two can never disagree about what "the overrides" are:
-# a clear that released three lines while the status read reported four would
-# verify a board as normal with one strap still asserted.
-STRAPS="MD_EDL SS_EDL UEFI FASTBOOT_MD"
+# The boot modes that HOLD a line, and the line each one holds. ONE table, used
+# by the set, by both releases and by the read, so they can never disagree about
+# what "the overrides" are: a clear that released three lines while the status
+# read reported four would verify a board as normal with one strap still
+# asserted, and a read that named the wrong mode for a line would light the
+# wrong button on the dashboard.
+#
+# A mode that is not here (SS_MD_FASTBOOT) is a firmware sequence: it is sent to
+# the controller as a command and holds nothing afterwards.
+MODE_LINES="BOOT_MD_EDL:MD_EDL BOOT_SS_EDL:SS_EDL BOOT_UEFI:UEFI MD_FASTBOOT:FASTBOOT_MD"
+STRAPS=""
+for _pair in $MODE_LINES; do
+    STRAPS="${STRAPS:+$STRAPS }${_pair#*:}"
+done
+
+# The line a mode holds, or nothing when it holds none.
+line_of_mode() {
+    for _pair in $MODE_LINES; do
+        if [ "${_pair%%:*}" = "$1" ]; then
+            echo "${_pair#*:}"
+            return 0
+        fi
+    done
+    return 0
+}
 
 [ -e "$PORT" ] || die "no controller at $PORT"
 mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
@@ -160,7 +182,7 @@ pulse_resin() {
 }
 
 action="${1:-}"
-[ -n "$action" ] || die "usage: bantam-power <on|off|cycle|reset|id|state|power-state|boot-overrides|mode|mode-clear> [--settle N]"
+[ -n "$action" ] || die "usage: bantam-power <on|off|cycle|reset|id|state|power-state|boot-overrides|mode|mode-release|mode-clear> [--settle N]"
 shift || true
 
 # `--settle` carries the board's configured off->on delay from the controller
@@ -223,6 +245,13 @@ case "$action" in
                 *)   echo "$sig=unknown" ;;
             esac
         done
+        # Which mode holds which line, from the same table `mode` sets from.
+        # conminer lights a boot-mode button from this, and the mapping lives
+        # nowhere else: a second copy in a config file is a copy that can name
+        # the wrong button.
+        for _pair in $MODE_LINES; do
+            echo "mode ${_pair%%:*} asserts ${_pair#*:}"
+        done
         ;;
     state)
         for sig in PWR_OFF KK_RESIN_N MD_PS_HOLD SAIL_PS_HOLD PMS_PON_DONE \
@@ -259,13 +288,7 @@ case "$action" in
             # The strap must stay asserted across the next power-on, so this only
             # sets it; `off`/`on`/`cycle` do the rest. Unknown names fall back to
             # the firmware sequence.
-            case "$a1" in
-                BOOT_MD_EDL)    strap=MD_EDL ;;
-                BOOT_SS_EDL)    strap=SS_EDL ;;
-                BOOT_UEFI)      strap=UEFI ;;
-                MD_FASTBOOT)    strap=FASTBOOT_MD ;;
-                *)              strap="" ;;
-            esac
+            strap=$(line_of_mode "$a1")
             if [ -n "${exit_after_clear:-}" ]; then
                 :
             elif [ -n "$strap" ]; then
@@ -273,6 +296,17 @@ case "$action" in
             else
                 echo "  $a1 -> $(say "$a1")"
             fi ;;
+    mode-release)
+            # Release the ONE line this mode holds and leave the others alone.
+            #
+            # `mode clear` is the only other way out, and it releases everything:
+            # a person who armed UEFI by mistake on a board that is deliberately
+            # held in EDL for a flash had no way to take back just the mistake.
+            [ -n "$a1" ] || die "mode-release needs a mode name"
+            strap=$(line_of_mode "$a1")
+            [ -n "$strap" ] || die "mode '$a1' holds no line on this controller, \
+so it has nothing of its own to release ('mode clear' releases every line)"
+            set_verify "$strap" 0 ;;
     mode-clear)
             # Boot straps latch until cleared, so leaving one set silently
             # changes how every later boot behaves.

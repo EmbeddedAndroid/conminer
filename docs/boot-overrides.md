@@ -93,20 +93,35 @@ held for a flash stays held until `boot_mode clear` or `normal_boot` is called.
 
 ## Teaching a controller to report
 
-A controller profile gains one optional hook:
+A controller profile gains two optional hooks:
 
     [[controllers]]
     name = "bantam"
-    boot_overrides = "bantam-power boot-overrides --port {controller}"
+    boot_overrides    = "bantam-power boot-overrides --port {controller}"
+    boot_mode_release = "bantam-power mode-release {mode} --port {controller}"
 
-The command prints one line per override and must only ever query:
+The read prints one line per override and must only ever query:
 
     MD_EDL=1
     SS_EDL=0
     UEFI=unknown
+    mode BOOT_MD_EDL asserts MD_EDL
+    mode BOOT_UEFI asserts UEFI
 
-`0` is released, `1` is held, anything else is unknown. Lines that are not
-`NAME=value` are ignored, so a status trailer is fine. `{controller}` and
-`{device}` are substituted as for `power`. The shipped `bantam-power` reads the
-same list of lines that its `mode clear` releases, so the two cannot disagree
-about what "the overrides" are.
+`0` is released, `1` is held, anything else is unknown. `{controller}` and
+`{device}` are substituted as for `power`.
+
+The `mode <MODE> asserts <LINE>` lines are optional and say which boot mode
+holds which line, and they come from the hook because the hook is what turns a
+mode into a line when it sets one: a second copy of that table in a config file
+is a copy that can disagree with it. Without them the lines are still
+reported and no mode is shown as held. Anything else the command prints is
+ignored, so a status trailer is fine.
+
+`boot_mode_release` releases the one line `{mode}` holds and nothing else, and
+must refuse a mode that holds none.
+
+The shipped `bantam-power` sets, reads, releases one and releases all from a
+single mode-to-line table, so they cannot disagree about what "the overrides"
+are, and a test sets every shipped mode and reads it back to hold the table to
+what the hardware-facing command actually does.

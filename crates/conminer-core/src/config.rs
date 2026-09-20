@@ -943,6 +943,14 @@ pub struct ControllerProfile {
     pub power: Option<String>,
     /// `{mode}`, `{device}`, `{controller}` are substituted.
     pub boot_mode: Option<String>,
+    /// Command that releases the ONE override `{mode}` holds, leaving the others
+    /// as they are. Same substitutions as `boot_mode`.
+    ///
+    /// Only meaningful on a controller that latches. Without it the only way
+    /// out of a held mode is `clear`, which releases every line: taking back a
+    /// mistaken selection also drops the EDL line a flash is relying on.
+    #[serde(default)]
+    pub boot_mode_release: Option<String>,
     /// Command that answers "is this board powered on?", printing `on`, `off`
     /// or `unknown`.
     ///
@@ -1445,6 +1453,7 @@ fn d_controllers() -> Vec<ControllerProfile> {
             boot_mode: Some("bantam-power mode {mode} --port {controller}".into()),
             power_state: Some("bantam-power power-state --port {controller}".into()),
             boot_overrides: Some("bantam-power boot-overrides --port {controller}".into()),
+            boot_mode_release: Some("bantam-power mode-release {mode} --port {controller}".into()),
             flash: None,
             boot_modes: vec![
                 "BOOT_MD_EDL".into(),
@@ -1480,6 +1489,7 @@ fn d_controllers() -> Vec<ControllerProfile> {
             // is explicit rather than missing.
             power_state: Some("conminer bughopper-power power-state --device {device}".into()),
             boot_overrides: None,
+            boot_mode_release: None,
             flash: None,
             // CBUS gives one boot-mode line (FORCED_USB_BOOT_N), so EDL is the only
             // mode this controller can select. Claiming more would be a lie.
@@ -1526,6 +1536,7 @@ fn d_controllers() -> Vec<ControllerProfile> {
             // reported as evidence, not as a verdict.
             power_state: Some("conminer tac-power power-state --device {device}".into()),
             boot_overrides: None,
+            boot_mode_release: None,
             flash: None,
             // Four real modes, each a distinct strap sequence in the vendor's
             // own config. `SAIL_EDL` is not a synonym for `EDL`: one straps the
@@ -2183,6 +2194,33 @@ impl Config {
         })
     }
 
+    /// Resolve the command that releases one mode's override.
+    ///
+    /// Same refusal rule as the others: a release aimed at an unknown controller
+    /// releases ANOTHER board's line, which takes that board out of the EDL its
+    /// flash is relying on.
+    pub fn boot_mode_release_hook_for_at<'a>(
+        &self,
+        canonical: &str,
+        by_path: Option<&str>,
+        present: impl IntoIterator<Item = (&'a str, Option<&'a str>)> + Clone,
+    ) -> Option<ResolvedHook> {
+        let c = self.controller_for(canonical)?;
+        let template = c.boot_mode_release.clone()?;
+        let self_present = present.clone().into_iter().any(|(n, _)| n == canonical);
+        let controller = self.controller_port_for(canonical, by_path, present);
+        if !Self::template_can_run(&template, controller.as_deref(), self_present) {
+            return None;
+        }
+        Some(ResolvedHook {
+            power_timeout_s: c.power_timeout_s,
+            template,
+            controller,
+            off_settle_s: c.off_settle_s,
+            source: c.name.clone(),
+        })
+    }
+
     /// Same, for boot modes.
     pub fn boot_mode_hook_for_at<'a>(
         &self,
@@ -2663,6 +2701,7 @@ mod tests {
             boot_mode: Some("bantam-power mode {mode}".into()),
             power_state: None,
             boot_overrides: None,
+            boot_mode_release: None,
             flash: None,
             boot_modes: vec!["BOOT_MD_EDL".into(), "BOOT_UEFI".into()],
             off_settle_s: 6.0,
@@ -2792,6 +2831,7 @@ mod tests {
                 boot_mode: Some("conminer bughopper-power mode {mode} --device {device}".into()),
                 power_state: None,
                 boot_overrides: None,
+                boot_mode_release: None,
                 flash: None,
                 boot_modes: vec!["EDL".into()],
                 off_settle_s: 6.0,

@@ -997,13 +997,19 @@ fn boot_modes_drive_the_strap_line_not_the_firmware_sequence() {
         ("BOOT_UEFI", "UEFI"),
         ("MD_FASTBOOT", "FASTBOOT_MD"),
     ] {
-        let arm = format!("{mode})");
-        assert!(hook.contains(&arm), "no strap mapping for {mode}");
+        // One table now feeds the set, both releases and the read, so the
+        // mapping is a `MODE:LINE` pair rather than a `case` arm. What it says
+        // is unchanged, and the boot-overrides suite sets every mode on a pty
+        // and reads this same line back asserted.
         assert!(
-            hook.contains(&format!("strap={strap}")),
+            hook.contains(&format!("{mode}:{strap}")),
             "{mode} must drive {strap}"
         );
     }
+    assert!(
+        hook.contains(r#"strap=$(line_of_mode "$a1")"#),
+        "`mode` must take its line from that table"
+    );
     // The strap has to be SET and READ BACK, not fired and hoped for.
     assert!(
         hook.contains(r#"set_verify "$strap" 1"#),

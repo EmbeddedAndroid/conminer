@@ -236,6 +236,10 @@ power_state = "bantam-power power-state --port {controller}"
 # the board sits in ROM EDL with a silent console. This is the controller's
 # intent for the next boot; what USB shows is a separate, observed fact.
 boot_overrides = "bantam-power boot-overrides --port {controller}"
+# Releases the ONE line {mode} holds. `boot_mode clear` releases them all, which
+# is the wrong tool for taking back one mistaken selection on a board that is
+# deliberately held in EDL.
+boot_mode_release = "bantam-power mode-release {mode} --port {controller}"
 boot_modes = ["BOOT_MD_EDL", "BOOT_SS_EDL", "BOOT_UEFI", "MD_FASTBOOT", "SS_MD_FASTBOOT"]
 off_settle_s = 6.0                    # let the PMIC rail collapse before restart
 

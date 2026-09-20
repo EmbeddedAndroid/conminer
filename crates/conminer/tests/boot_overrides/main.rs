@@ -117,6 +117,7 @@ impl Rig {
                 power_state: None,
                 boot_overrides: readable
                     .then(|| format!("{run} boot-overrides --port {{controller}}")),
+                boot_mode_release: None,
                 flash: None,
                 boot_modes: vec![
                     "BOOT_MD_EDL".into(),
@@ -1075,4 +1076,143 @@ fn the_shipped_hook_releases_exactly_the_lines_it_reports() {
         "0",
         "and a release touches nothing but overrides"
     );
+}
+
+/// The mode table is true. For every mode the shipped profile offers, set it
+/// with the shipped hook and read it back with the shipped hook: a mode the
+/// hook says holds a line must be the mode that lit it, and a mode it does not
+/// mention must have held nothing.
+///
+/// This is what lets a dashboard light a button from the read alone. A table
+/// that named the wrong mode would light UEFI on a board held in EDL.
+#[test]
+fn the_shipped_hook_names_the_mode_that_holds_each_line() {
+    use conminer_core::overrides::{BootOverrides, Level};
+    let modes = Config::default()
+        .controllers
+        .iter()
+        .find(|c| c.name == "bantam")
+        .expect("the shipped bantam profile")
+        .boot_modes
+        .clone();
+    assert!(modes.len() >= 4, "{modes:?}");
+
+    let results: Vec<Option<(String, BootOverrides)>> = std::thread::scope(|s| {
+        let handles: Vec<_> = modes
+            .iter()
+            .map(|mode| {
+                s.spawn(move || {
+                    let bantam = FakeBantam::start(&[
+                        ("MD_EDL", "0"),
+                        ("SS_EDL", "0"),
+                        ("UEFI", "0"),
+                        ("FASTBOOT_MD", "0"),
+                    ])?;
+                    let set = bantam.run(&["mode", mode]);
+                    assert!(
+                        set.status.success(),
+                        "{mode}: {}",
+                        String::from_utf8_lossy(&set.stderr)
+                    );
+                    let read = bantam.run(&["boot-overrides"]);
+                    Some((
+                        mode.clone(),
+                        BootOverrides::parse(&String::from_utf8_lossy(&read.stdout)),
+                    ))
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let mut declared = 0;
+    for result in results {
+        let Some((mode, read)) = result else {
+            eprintln!("SKIP: no pty in this environment");
+            return;
+        };
+        // WHICH line: the controller's firmware sequence of the same name
+        // leaves the line at 0 and the board boots normally, so each mode has
+        // to drive this strap and no other.
+        let wired = [
+            ("BOOT_MD_EDL", "MD_EDL"),
+            ("BOOT_SS_EDL", "SS_EDL"),
+            ("BOOT_UEFI", "UEFI"),
+            ("MD_FASTBOOT", "FASTBOOT_MD"),
+        ];
+        match read.mode_level(&mode) {
+            Some(level) => {
+                declared += 1;
+                assert_eq!(level, Level::Asserted, "{mode} was set: {read:?}");
+                let line = wired
+                    .iter()
+                    .find(|(m, _)| *m == mode)
+                    .map(|(_, l)| *l)
+                    .unwrap_or_else(|| panic!("{mode} latches a line nobody has measured"));
+                assert_eq!(
+                    read.asserted(),
+                    vec![line],
+                    "{mode} holds exactly its own line: {read:?}"
+                );
+                for (other, _) in read.modes.iter().filter(|(m, _)| *m != mode) {
+                    assert_eq!(
+                        read.mode_level(other),
+                        Some(Level::Released),
+                        "setting {mode} must not light {other}: {read:?}"
+                    );
+                }
+            }
+            None => assert!(
+                read.asserted().is_empty(),
+                "{mode} held a line the hook's table does not admit to: {read:?}"
+            ),
+        }
+    }
+    assert_eq!(declared, 4, "the four latching modes are all declared");
+}
+
+/// The shipped release lets go of ONE line, and refuses a mode that holds none
+/// without touching anything.
+#[test]
+fn the_shipped_hook_releases_one_mode_and_only_its_line() {
+    let Some(bantam) = FakeBantam::start(&[
+        ("MD_EDL", "1"),
+        ("SS_EDL", "1"),
+        ("UEFI", "1"),
+        ("FASTBOOT_MD", "1"),
+    ]) else {
+        eprintln!("SKIP: no pty in this environment");
+        return;
+    };
+    let out = bantam.run(&["mode-release", "BOOT_UEFI"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sets: Vec<String> = bantam
+        .sent()
+        .into_iter()
+        .filter(|l| !l.ends_with(" ?"))
+        .collect();
+    assert_eq!(sets, vec!["UEFI 0"], "one line driven, and driven low");
+    for held in ["MD_EDL", "SS_EDL", "FASTBOOT_MD"] {
+        assert_eq!(bantam.level(held), "1", "{held} must not move");
+    }
+
+    let before = bantam.sent().len();
+    for bad in [
+        &["mode-release", "SS_MD_FASTBOOT"][..],
+        &["mode-release"][..],
+    ] {
+        let out = bantam.run(bad);
+        assert!(!out.status.success(), "{bad:?} must be refused");
+    }
+    assert_eq!(
+        bantam.sent().len(),
+        before,
+        "a refused release sent the controller something: {:?}",
+        bantam.sent()
+    );
+    assert_eq!(bantam.level("MD_EDL"), "1");
 }
