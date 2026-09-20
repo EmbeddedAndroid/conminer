@@ -648,7 +648,7 @@ fn verification_watches_every_console_of_the_board_not_just_the_one_named() {
     // pass that changed nothing about the behaviour it guards.
     let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        flat.contains("verify_power_effect( ctx, &d, &scope.watched,"),
+        flat.contains("verify_power_effect( ctx, d, &scope.watched,"),
         "…and verification must use it"
     );
     // The device form must populate it; a single-console watch is the bug.

@@ -4088,50 +4088,7 @@ pub fn registry() -> &'static [Tool] {
                 let scope = actuation_scope(ctx, a)?;
                 let d = scope.primary.clone();
                 let action = PowerAction::parse(s(a, "action")?)?;
-                let present = present_with_topology(ctx);
-                let hook = ctx
-                    .config()
-                    .power_hook_for_at(
-                        d.display_name(),
-                        &d.canonical,
-                        d.by_path.as_deref(),
-                        present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
-                    )
-                    .ok_or_else(|| {
-                        ToolError::new(
-                            ErrorCode::HookNotConfigured,
-                            format!("no power hook for {}", d.display_name()),
-                        )
-                        .with_hint(
-                            "configure [devices.<id>.hooks].power, or add a [[controllers]] \
-                             profile whose `controls` glob matches this console",
-                        )
-                    })?;
-                // The CONTROLLER decides how long its own hooks may take: a Bughopper
-                // claims a USB interface and holds PM_RESIN_N for 6s (~35s wall),
-                // which the 30s global default killed mid-action -- so `power off`
-                // and `cycle` on that board always returned HOOK_TIMEOUT, sometimes
-                // having actuated and sometimes not.
-                let timeout = std::time::Duration::from_secs(
-                    hook.power_timeout_s
-                        .unwrap_or(ctx.config().hooks.power_timeout_s),
-                );
-                // HOOKS GET THE CANONICAL PATH, never the display name.
-                // A nickname is how a HUMAN or an agent selects a device; it is
-                // not a hardware identifier. Substituting it into `{device}` fed
-                // "adp-ventuno" to a hook that resolves an FTDI by its by-id
-                // path, which then matched four devices and failed DEVICE_GONE --
-                // so naming a board permanently broke its power control.
-                let name = d.canonical.clone();
-                let settle = format!("{}", hook.off_settle_s);
-                let controller = hook.controller.clone().unwrap_or_default();
-
-                let args = [
-                    ("action", action.as_str()),
-                    ("device", name.as_str()),
-                    ("controller", controller.as_str()),
-                    ("off_settle", settle.as_str()),
-                ];
+                let plan = PowerPlan::resolve(ctx, &d)?;
 
                 // §F5. EVERY validation, NOTHING actuated.
                 //
@@ -4144,8 +4101,8 @@ pub fn registry() -> &'static [Tool] {
                     return fresh(ctx, &d, json!({
                         "dry_run": true,
                         "hook": {
-                            "command": hooks::render(&hook.template, &args),
-                            "timeout_s": timeout.as_secs(),
+                            "command": hooks::render(&plan.hook.template, &plan.args(action.as_str())),
+                            "timeout_s": plan.timeout.as_secs(),
                         },
                         "would_open_epochs": scope.consoles.iter()
                             .map(|c| json!({"device": c.display_name(), "label": opt_s(a, "label")}))
@@ -4174,142 +4131,17 @@ pub fn registry() -> &'static [Tool] {
                 // whose client gave up on the first one and moved on while the
                 // escalation below was still pressing buttons.
                 let in_flight = ctx.begin_actuation("power", action.as_str(), &scope.consoles)?;
-                let started = std::time::Instant::now();
-                let poked = if action.as_str() == "off" && opt_s(a, "verify") == Some("poke") {
-                    Some(poke_console(ctx, &d)?)
-                } else {
-                    None
-                };
-                let marks = stream_marks(ctx, &scope);
-                let result = block_on(hooks::run(&hook.template, &args, timeout))?;
-
-                // ---- verify the ACTION, not the exit code ----------------
-                //
-                // A hook returning 0 means "the command ran", never "the board
-                // did what you asked". Stress testing found both halves of that
-                // gap on real hardware:
-                //   * a Bughopper `off` that reported ok while the console kept
-                //     talking (~1 in 20): a 6s CBUS hold that did not latch as a
-                //     PMIC long-press.
-                //   * an IQ10 `reset` that reported ok, opened a fresh epoch, and
-                //     captured ZERO bytes -- the board wedged after ~8 resets and
-                //     no further reset could recover it. Every hook kept saying
-                //     ok, so a loop reading exit codes would spin forever.
-                //
-                // So conminer checks what it can see and escalates once. It is
-                // the lowest layer in the stack: if it lies, everything above it
-                // inherits the lie.
-                in_flight.phase("verify");
-                let (verified, escalation) = verify_power_effect(
-                    ctx, &d, &scope.watched, action.as_str(), &hook, timeout, poked,
-                );
-
-                let label = opt_s(a, "label");
-                let event = json!({"action": action, "hook": result, "effect": verified});
-                let opened =
-                    open_actuation_epochs(ctx, &scope, "power", label, "power", &event, &marks)?;
-
-                // THE CALLER GETS ITS ANSWER WHEN ESCALATION IS DECIDED, NOT
-                // WHEN IT IS DONE. The epoch is open, the hook has run, and the
-                // rest -- two more presses and half a minute of settling -- runs
-                // here on its own thread, holding the board's claim the whole
-                // way so nobody actuates into the middle of it. What it finds is
-                // left for actuation_status; the caller's `effect` says so.
-                let outcome_ids: Vec<i64> = scope.consoles.iter().map(|c| c.id).collect();
-                let started_ms = ctx.now();
-                let base = json!({
-                    "tool": "power",
-                    "action": action,
-                    "target": scope.target,
-                    "device": d.display_name(),
-                    "boot_id": opened.first().and_then(|o| o.get("boot_id").cloned()),
-                    "started_ms": started_ms,
-                });
-                match escalation {
-                    Some(cont) => {
-                        let bg = ctx.clone();
-                        let guard = in_flight;
-                        let consoles = scope.consoles.clone();
-                        let action_name = action.as_str().to_string();
-                        let escalation_of = opened
-                            .first()
-                            .and_then(|o| o.get("boot_id").and_then(Value::as_i64));
-                        std::thread::Builder::new()
-                            .name("power-escalation".into())
-                            .spawn(move || {
-                                let ids = guard.ids().to_vec();
-                                let effect = cont(&bg, &ids);
-                                // DURABLE, on every console: the epoch's own
-                                // event said "escalation running"; this is how
-                                // it ended. console_state's decay reads it, and
-                                // an mcpd restart does not lose it.
-                                let now = bg.now();
-                                let ev = json!({
-                                    "action": action_name,
-                                    "effect": effect,
-                                    "escalation_of": escalation_of,
-                                    "source": "escalation",
-                                });
-                                for c in &consoles {
-                                    let _ = bg.with_store(c, |st| {
-                                        let session = st.latest_session()?.map(|s| s.id);
-                                        let boot = st.latest_boot()?.map(|b| b.id);
-                                        st.append_event(session, boot, now, "power", &ev)?;
-                                        Ok(())
-                                    });
-                                }
-                                let mut done = base;
-                                if let Some(o) = done.as_object_mut() {
-                                    o.insert("effect".into(), effect);
-                                    o.insert("finished_ms".into(), json!(now));
-                                }
-                                bg.record_actuation_outcome(&ids, done);
-                                drop(guard);
-                            })
-                            .map_err(|e| {
-                                ToolError::new(
-                                    ErrorCode::Internal,
-                                    format!("could not start the escalation thread: {e}"),
-                                )
-                            })?;
-                    }
-                    None => {
-                        let mut done = base;
-                        if let Some(o) = done.as_object_mut() {
-                            o.insert("effect".into(), verified.clone());
-                            o.insert("finished_ms".into(), json!(ctx.now()));
-                        }
-                        ctx.record_actuation_outcome(&outcome_ids, done);
-                    }
-                }
-
-                // The primary's epoch stays at the top level so every existing
-                // caller keeps working unchanged; `opened` is the whole picture.
-                let first = opened.first().cloned().unwrap_or(Value::Null);
-                let mut payload = json!({
-                    "boot_id": first.get("boot_id").cloned().unwrap_or(Value::Null),
-                    "boot_seq": first.get("boot_seq").cloned().unwrap_or(Value::Null),
-                    "cursor": first.get("cursor").cloned().unwrap_or(Value::Null),
-                    "hook": result,
-                    // What the BOARD did, as distinct from what the hook
-                    // returned. An agent that only reads `hook` learns nothing
-                    // about whether the board complied.
-                    "effect": verified,
-                    // How long the whole workflow held the board. A caller whose
-                    // client gave up before this arrived reads it from the next
-                    // call and learns what timeout the board actually needs.
-                    "duration_ms": started.elapsed().as_millis() as u64,
-                });
-                if let Some(o) = payload.as_object_mut() {
-                    if scope.target.is_some() {
-                        o.insert("target".into(), json!(scope.target));
-                        o.insert("opened".into(), json!(opened));
-                        o.insert("exempt_not_consoles".into(), json!(scope.exempt));
-                    }
-                    if let Some(n) = &scope.note {
-                        o.insert("note".into(), json!(n));
-                    }
-                }
+                let payload = run_power(
+                    ctx,
+                    &scope,
+                    &d,
+                    action,
+                    &plan,
+                    opt_s(a, "label"),
+                    opt_s(a, "verify") == Some("poke"),
+                    in_flight,
+                    std::time::Instant::now(),
+                )?;
                 fresh(ctx, &d, payload)
             },
         },
@@ -7600,6 +7432,241 @@ pub fn capture_state_is_stale<'a>(
         && p["open_failed"] != true
         && p["error"].is_null();
     clean.then_some(stored)
+}
+
+/// Everything `power` works out before it touches a board.
+///
+/// Its own type so that a second tool can press power through this exact path.
+/// A second copy of the press, its verification and its escalation would drift
+/// from this one the way the two inventory builders did, and the difference
+/// would be found on hardware.
+struct PowerPlan {
+    hook: conminer_core::config::ResolvedHook,
+    timeout: std::time::Duration,
+    device: String,
+    settle: String,
+    controller: String,
+}
+
+impl PowerPlan {
+    fn resolve(ctx: &Context, d: &DeviceRow) -> Result<Self> {
+        let present = present_with_topology(ctx);
+        let hook = ctx
+            .config()
+            .power_hook_for_at(
+                d.display_name(),
+                &d.canonical,
+                d.by_path.as_deref(),
+                present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
+            )
+            .ok_or_else(|| {
+                ToolError::new(
+                    ErrorCode::HookNotConfigured,
+                    format!("no power hook for {}", d.display_name()),
+                )
+                .with_hint(
+                    "configure [devices.<id>.hooks].power, or add a [[controllers]] \
+                     profile whose `controls` glob matches this console",
+                )
+            })?;
+        // The CONTROLLER decides how long its own hooks may take: a Bughopper
+        // claims a USB interface and holds PM_RESIN_N for 6s (~35s wall),
+        // which the 30s global default killed mid-action -- so `power off`
+        // and `cycle` on that board always returned HOOK_TIMEOUT, sometimes
+        // having actuated and sometimes not.
+        let timeout = std::time::Duration::from_secs(
+            hook.power_timeout_s
+                .unwrap_or(ctx.config().hooks.power_timeout_s),
+        );
+        // Hooks get the canonical path, never the display name.
+        // A nickname is how a HUMAN or an agent selects a device; it is
+        // not a hardware identifier. Substituting it into `{device}` fed
+        // a nickname to a hook that resolves an FTDI by its by-id path,
+        // which then matched four devices and failed DEVICE_GONE, so
+        // naming a board permanently broke its power control.
+        let name = d.canonical.clone();
+        let settle = format!("{}", hook.off_settle_s);
+        let controller = hook.controller.clone().unwrap_or_default();
+        Ok(Self {
+            hook,
+            timeout,
+            device: name,
+            settle,
+            controller,
+        })
+    }
+
+    fn args<'a>(&'a self, action: &'a str) -> [(&'static str, &'a str); 4] {
+        [
+            ("action", action),
+            ("device", self.device.as_str()),
+            ("controller", self.controller.as_str()),
+            ("off_settle", self.settle.as_str()),
+        ]
+    }
+}
+
+/// Press power, verify what the BOARD did, open the epochs, and hand any
+/// escalation to its own thread. The caller has already claimed the board.
+///
+/// Takes the claim by value because an escalation outlives this call and has to
+/// keep the board claimed until it is done.
+#[allow(clippy::too_many_arguments)]
+fn run_power(
+    ctx: &Context,
+    scope: &ActuationScope,
+    d: &DeviceRow,
+    action: conminer_core::hooks::PowerAction,
+    plan: &PowerPlan,
+    label: Option<&str>,
+    poke: bool,
+    in_flight: crate::state::ActuationGuard,
+    started: std::time::Instant,
+) -> Result<Value> {
+    use conminer_core::hooks;
+    let hook = &plan.hook;
+    let timeout = plan.timeout;
+    let args = plan.args(action.as_str());
+    let poked = if action.as_str() == "off" && poke {
+        Some(poke_console(ctx, d)?)
+    } else {
+        None
+    };
+    let marks = stream_marks(ctx, scope);
+    let result = block_on(hooks::run(&hook.template, &args, timeout))?;
+
+    // ---- verify the ACTION, not the exit code ----------------
+    //
+    // A hook returning 0 means "the command ran", never "the board
+    // did what you asked". Stress testing found both halves of that
+    // gap on real hardware:
+    //   * a Bughopper `off` that reported ok while the console kept
+    //     talking (~1 in 20): a 6s CBUS hold that did not latch as a
+    //     PMIC long-press.
+    //   * a `reset` that reported ok, opened a fresh epoch, and
+    //     captured ZERO bytes: the board wedged after ~8 resets and
+    //     no further reset could recover it. Every hook kept saying
+    //     ok, so a loop reading exit codes would spin forever.
+    //
+    // So conminer checks what it can see and escalates once. It is
+    // the lowest layer in the stack: if it lies, everything above it
+    // inherits the lie.
+    in_flight.phase("verify");
+    let (verified, escalation) = verify_power_effect(
+        ctx,
+        d,
+        &scope.watched,
+        action.as_str(),
+        hook,
+        timeout,
+        poked,
+    );
+
+    let event = json!({"action": action, "hook": result, "effect": verified});
+    let opened = open_actuation_epochs(ctx, scope, "power", label, "power", &event, &marks)?;
+
+    // The caller gets its answer when escalation is decided, not
+    // When it is done. The epoch is open, the hook has run, and the
+    // rest -- two more presses and half a minute of settling -- runs
+    // here on its own thread, holding the board's claim the whole
+    // way so nobody actuates into the middle of it. What it finds is
+    // left for actuation_status; the caller's `effect` says so.
+    let outcome_ids: Vec<i64> = scope.consoles.iter().map(|c| c.id).collect();
+    let started_ms = ctx.now();
+    let base = json!({
+        "tool": "power",
+        "action": action,
+        "target": scope.target,
+        "device": d.display_name(),
+        "boot_id": opened.first().and_then(|o| o.get("boot_id").cloned()),
+        "started_ms": started_ms,
+    });
+    match escalation {
+        Some(cont) => {
+            let bg = ctx.clone();
+            let guard = in_flight;
+            let consoles = scope.consoles.clone();
+            let action_name = action.as_str().to_string();
+            let escalation_of = opened
+                .first()
+                .and_then(|o| o.get("boot_id").and_then(Value::as_i64));
+            std::thread::Builder::new()
+                .name("power-escalation".into())
+                .spawn(move || {
+                    let ids = guard.ids().to_vec();
+                    let effect = cont(&bg, &ids);
+                    // DURABLE, on every console: the epoch's own
+                    // event said "escalation running"; this is how
+                    // it ended. console_state's decay reads it, and
+                    // an mcpd restart does not lose it.
+                    let now = bg.now();
+                    let ev = json!({
+                        "action": action_name,
+                        "effect": effect,
+                        "escalation_of": escalation_of,
+                        "source": "escalation",
+                    });
+                    for c in &consoles {
+                        let _ = bg.with_store(c, |st| {
+                            let session = st.latest_session()?.map(|s| s.id);
+                            let boot = st.latest_boot()?.map(|b| b.id);
+                            st.append_event(session, boot, now, "power", &ev)?;
+                            Ok(())
+                        });
+                    }
+                    let mut done = base;
+                    if let Some(o) = done.as_object_mut() {
+                        o.insert("effect".into(), effect);
+                        o.insert("finished_ms".into(), json!(now));
+                    }
+                    bg.record_actuation_outcome(&ids, done);
+                    drop(guard);
+                })
+                .map_err(|e| {
+                    ToolError::new(
+                        ErrorCode::Internal,
+                        format!("could not start the escalation thread: {e}"),
+                    )
+                })?;
+        }
+        None => {
+            let mut done = base;
+            if let Some(o) = done.as_object_mut() {
+                o.insert("effect".into(), verified.clone());
+                o.insert("finished_ms".into(), json!(ctx.now()));
+            }
+            ctx.record_actuation_outcome(&outcome_ids, done);
+        }
+    }
+
+    // The primary's epoch stays at the top level so every existing
+    // caller keeps working unchanged; `opened` is the whole picture.
+    let first = opened.first().cloned().unwrap_or(Value::Null);
+    let mut payload = json!({
+        "boot_id": first.get("boot_id").cloned().unwrap_or(Value::Null),
+        "boot_seq": first.get("boot_seq").cloned().unwrap_or(Value::Null),
+        "cursor": first.get("cursor").cloned().unwrap_or(Value::Null),
+        "hook": result,
+        // What the BOARD did, as distinct from what the hook
+        // returned. An agent that only reads `hook` learns nothing
+        // about whether the board complied.
+        "effect": verified,
+        // How long the whole workflow held the board. A caller whose
+        // client gave up before this arrived reads it from the next
+        // call and learns what timeout the board actually needs.
+        "duration_ms": started.elapsed().as_millis() as u64,
+    });
+    if let Some(o) = payload.as_object_mut() {
+        if scope.target.is_some() {
+            o.insert("target".into(), json!(scope.target));
+            o.insert("opened".into(), json!(opened));
+            o.insert("exempt_not_consoles".into(), json!(scope.exempt));
+        }
+        if let Some(n) = &scope.note {
+            o.insert("note".into(), json!(n));
+        }
+    }
+    Ok(payload)
 }
 
 fn probe_power_state(ctx: &Context, d: &DeviceRow) -> Option<String> {

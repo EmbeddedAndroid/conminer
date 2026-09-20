@@ -981,7 +981,7 @@ fn f1_effect_verification_watches_every_console_of_the_board() {
     // pass that changed nothing about the behaviour it guards.
     let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        flat.contains("verify_power_effect( ctx, &d, &scope.watched,"),
+        flat.contains("verify_power_effect( ctx, d, &scope.watched,"),
         "the verifier must be given the whole board, not one console"
     );
     assert!(
