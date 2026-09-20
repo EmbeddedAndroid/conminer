@@ -4186,7 +4186,10 @@ pub fn registry() -> &'static [Tool] {
                           invoking the lab's boot-mode hook, and open an epoch labelled with it. \
                           Separate from `power` because it is a different question: power means \
                           the same thing everywhere, while the valid modes are a property of the \
-                          silicon.",
+                          silicon. On a latching controller a mode stays HELD until it is \
+                          released: `release: true` takes back that one mode, `mode: \"clear\"` \
+                          releases them all, and the answer always carries the controller's own \
+                          readback of what is held now.",
             mutating: true,
             schema: || json!({
                 "type": "object",
@@ -4205,6 +4208,12 @@ pub fn registry() -> &'static [Tool] {
                          and the strap STAYS SET, so every later boot lands in that mode until \
                          it is cleared. Sequencing controllers (Bughopper) do the whole thing \
                          in one action and release automatically."},
+                    "release": {"type": "boolean", "description":
+                        "Release the ONE override `mode` holds and leave every other line as \
+                         it is, instead of asserting it. For taking back one selection on a \
+                         board that is deliberately held in another (EDL for a flash). Only on \
+                         a latching controller whose profile has a `boot_mode_release` hook; \
+                         `boot_overrides` says which in `release`. Not valid with \"clear\"."},
                     "label": {"type": "string"}
                 },
                 "additionalProperties": false
@@ -4242,22 +4251,61 @@ pub fn registry() -> &'static [Tool] {
                         "also_accepted": ["clear", "none", "normal"],
                     })));
                 }
-                let hook = ctx
-                    .config()
-                    .boot_mode_hook_for_at(
-                        d.display_name(),
-                        &d.canonical,
-                        d.by_path.as_deref(),
-                        present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
+                // Release one, as its own explicit request. Never a toggle: a
+                // caller says which way the line should go, so a press made
+                // against a stale picture can at worst repeat what is already
+                // true. It cannot flip a line the caller never saw.
+                let releasing = flag(a, "release");
+                if releasing && clearing {
+                    return Err(ToolError::new(
+                        ErrorCode::InvalidArgument,
+                        "`release` names ONE mode to take back; \"clear\" already releases \
+                         every override",
                     )
-                    .ok_or_else(|| {
-                        ToolError::new(
-                            ErrorCode::HookNotConfigured,
-                            format!("no boot_mode hook for {}", d.display_name()),
+                    .with_hint("drop `release`, or pass the mode whose line should be released"));
+                }
+                let hook = if releasing {
+                    ctx.config()
+                        .boot_mode_release_hook_for_at(
+                            &d.canonical,
+                            d.by_path.as_deref(),
+                            present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
                         )
-                    })?;
+                        .ok_or_else(|| {
+                            ToolError::new(
+                                ErrorCode::HookNotConfigured,
+                                format!(
+                                    "{}'s controller cannot release one mode on its own",
+                                    d.display_name()
+                                ),
+                            )
+                            .with_hint(
+                                "its profile has no `boot_mode_release` hook. \
+                                 boot_mode(mode: \"clear\") releases every override",
+                            )
+                        })?
+                } else {
+                    ctx.config()
+                        .boot_mode_hook_for_at(
+                            d.display_name(),
+                            &d.canonical,
+                            d.by_path.as_deref(),
+                            present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
+                        )
+                        .ok_or_else(|| {
+                            ToolError::new(
+                                ErrorCode::HookNotConfigured,
+                                format!("no boot_mode hook for {}", d.display_name()),
+                            )
+                        })?
+                };
                 // Normalised so a hook sees one spelling for "release everything".
                 let mode: &str = if clearing { "clear" } else { mode };
+                let action = if releasing {
+                    format!("release {mode}")
+                } else {
+                    mode.to_string()
+                };
 
                 // The CONTROLLER decides how long its own hooks may take: a Bughopper
                 // claims a USB interface and holds PM_RESIN_N for 6s (~35s wall),
@@ -4289,6 +4337,7 @@ pub fn registry() -> &'static [Tool] {
                     return fresh(ctx, &d, json!({
                         "dry_run": true,
                         "mode": mode,
+                        "release": releasing,
                         "hook": {
                             "command": hooks::render(&hook.template, &args),
                             "timeout_s": timeout.as_secs(),
@@ -4309,13 +4358,13 @@ pub fn registry() -> &'static [Tool] {
                 // Same exclusion as `power`: a strap change is an actuation of
                 // the same board, and racing one against a power workflow is
                 // the same hardware race.
-                let _in_flight = ctx.begin_actuation("boot_mode", mode, &scope.consoles)?;
+                let _in_flight = ctx.begin_actuation("boot_mode", &action, &scope.consoles)?;
                 let marks = stream_marks(ctx, &scope);
                 let result = block_on(hooks::run(&hook.template, &args, timeout))?;
 
                 let label = opt_s(a, "label").map(str::to_string)
-                    .unwrap_or_else(|| format!("boot_mode {mode}"));
-                let event = json!({"mode": mode, "hook": result});
+                    .unwrap_or_else(|| format!("boot_mode {action}"));
+                let event = json!({"mode": mode, "release": releasing, "hook": result});
                 let opened = open_actuation_epochs(
                     ctx, &scope, "power", Some(&label), "boot_mode", &event, &marks,
                 )?;
@@ -4345,9 +4394,10 @@ pub fn registry() -> &'static [Tool] {
                     "boot_id": first.get("boot_id").cloned().unwrap_or(Value::Null),
                     "seq": first.get("boot_seq").cloned().unwrap_or(Value::Null),
                     "mode": mode,
+                    "released": releasing,
                     "hook": result,
-                    "entered": immediate && !clearing,
-                    "next": if clearing {
+                    "entered": immediate && !clearing && !releasing,
+                    "next": if clearing || releasing {
                         Value::Null
                     } else if immediate {
                         json!("this controller sequenced the entry itself: the board is in the \
@@ -4383,6 +4433,8 @@ pub fn registry() -> &'static [Tool] {
                 if let Some(reading) = read_boot_overrides(ctx, &d, 0) {
                     let held: Vec<String> =
                         reading.0.overrides.asserted().iter().map(|n| n.to_string()).collect();
+                    let still_held = reading.0.overrides.mode_level(mode)
+                        != Some(conminer_core::overrides::Level::Released);
                     let rendered = overrides_json(ctx, Some(reading));
                     if let Some(o) = payload.as_object_mut() {
                         if held.len() > 1 {
@@ -4399,6 +4451,15 @@ pub fn registry() -> &'static [Tool] {
                             o.insert("warning".into(), json!(format!(
                                 "the release ran but the controller still reads {} as held",
                                 held.join(", ")
+                            )));
+                        }
+                        // The same honesty for one mode: released means the
+                        // controller read its line back released, not that the
+                        // hook exited 0.
+                        if releasing && still_held {
+                            o.insert("warning".into(), json!(format!(
+                                "the release ran but the controller does not read {mode} as \
+                                 released"
                             )));
                         }
                         o.insert("boot_overrides".into(), rendered);
@@ -4423,7 +4484,7 @@ pub fn registry() -> &'static [Tool] {
                 // on its own deadline.
                 // §W4: publish the new capture health; the envelope reads it
                 // LIVE (Context::capture_health), so there is no row to patch.
-                if immediate && !clearing && mode.eq_ignore_ascii_case("edl") {
+                if immediate && !clearing && !releasing && mode.eq_ignore_ascii_case("edl") {
                     let mut reg = ctx.registry();
                     let _ = conminer_core::live::publish_capture_state(
                         &mut reg,
@@ -8144,12 +8205,21 @@ fn read_boot_overrides(
         // least justified.
         Err(e) => (BootOverrides::unreadable(), Some(e.message)),
     };
+    let release_one = ctx
+        .config()
+        .boot_mode_release_hook_for_at(
+            &d.canonical,
+            d.by_path.as_deref(),
+            present.iter().map(|(n, p)| (n.as_str(), p.as_deref())),
+        )
+        .is_some();
     let reading = crate::state::OverridesReading {
         overrides,
         read_at_ms: ctx.now(),
         error,
         controller: Some(hook.source.clone()),
         controller_port: hook.controller.clone(),
+        release_one,
     };
     ctx.store_overrides(&key, reading.clone());
     Some((reading, "controller_read"))
@@ -8201,6 +8271,13 @@ fn overrides_json(
         "overrides": r.overrides.levels_json(),
         "asserted": asserted,
         "unknown": unknown,
+        // Per boot mode, because that is what a caller selects and what a
+        // dashboard button is. `held` and `released` are each proven by a clean
+        // read of the mode's own line; a mode missing from here holds nothing
+        // (a firmware sequence), which is different from one whose state is
+        // `unknown`. After a failed read this is empty: nothing is known.
+        "modes": r.overrides.modes_json(),
+        "release": if r.release_one { "per_mode" } else { "all_only" },
         "effect": effect,
         "read_at_ms": r.read_at_ms,
         "age_ms": ctx.now().saturating_sub(r.read_at_ms),

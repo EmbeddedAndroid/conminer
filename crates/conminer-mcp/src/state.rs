@@ -74,6 +74,10 @@ pub struct OverridesReading {
     pub error: Option<String>,
     pub controller: Option<String>,
     pub controller_port: Option<String>,
+    /// Can this controller release ONE mode's line (`boot_mode` with `release`),
+    /// or only all of them at once? Carried with the reading so a surface that
+    /// offers the release knows before it is pressed.
+    pub release_one: bool,
 }
 
 /// One actuation still running on a console.

@@ -110,7 +110,9 @@ impl Handler {
                  depends on that). `diagnose` and `boot_overrides` read what is held back from \
                  the controller, separately from the observed `edl`; unknown is never clear. \
                  `normal_boot` releases, PROVES it by readback, then cycles, and aborts before \
-                 cycling (NORMAL_BOOT_ABORTED) if it cannot prove the release.\n\
+                 cycling (NORMAL_BOOT_ABORTED) if it cannot prove the release. To take back ONE \
+                 mode and keep the rest (a wrong pick on a board held in EDL for a flash), \
+                 `boot_mode` with `release: true`; `boot_overrides.modes` says which are held.\n\
                  - Page with `next_offset` from the response, never by the limit you asked for.\n\
                  - Template `count` is frequency, not chronology. list_templates is a table of \
                  contents.\n\

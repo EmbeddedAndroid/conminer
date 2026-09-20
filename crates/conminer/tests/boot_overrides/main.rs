@@ -41,7 +41,21 @@ case "$1" in
       if [ -f "$D/unreadable.$l" ]; then echo "$l=unknown"
       elif [ -f "$D/held.$l" ]; then echo "$l=1"
       else echo "$l=0"; fi
-    done ;;
+    done
+    echo "mode BOOT_MD_EDL asserts MD_EDL"
+    echo "mode BOOT_SS_EDL asserts SS_EDL"
+    echo "mode BOOT_UEFI asserts UEFI"
+    echo "mode MD_FASTBOOT asserts FASTBOOT_MD" ;;
+  mode-release)
+    [ -f "$D/release_fails" ] && { echo "UEFI := 0 but reads back '1'" >&2; exit 3; }
+    case "$2" in
+      BOOT_MD_EDL) l=MD_EDL ;;
+      BOOT_SS_EDL) l=SS_EDL ;;
+      BOOT_UEFI)   l=UEFI ;;
+      MD_FASTBOOT) l=FASTBOOT_MD ;;
+      *) echo "mode '$2' holds no line" >&2; exit 1 ;;
+    esac
+    [ -f "$D/stuck.$l" ] || rm -f "$D/held.$l" ;;
   mode)
     if [ "$2" = "clear" ]; then
       [ -f "$D/clear_fails" ] && { echo "MD_EDL := 0 but reads back '1'" >&2; exit 3; }
@@ -71,15 +85,20 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
-        Self::build(true)
+        Self::build(true, true)
     }
 
     /// A latching controller with NO way to read its lines back.
     fn without_a_read_hook() -> Self {
-        Self::build(false)
+        Self::build(false, true)
     }
 
-    fn build(readable: bool) -> Self {
+    /// A latching controller that can only release everything at once.
+    fn without_a_release_hook() -> Self {
+        Self::build(true, false)
+    }
+
+    fn build(readable: bool, releasable: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let ctl = dir.path().join("ctl");
         std::fs::create_dir_all(&ctl).unwrap();
@@ -117,7 +136,8 @@ impl Rig {
                 power_state: None,
                 boot_overrides: readable
                     .then(|| format!("{run} boot-overrides --port {{controller}}")),
-                boot_mode_release: None,
+                boot_mode_release: releasable
+                    .then(|| format!("{run} mode-release {{mode}} --port {{controller}}")),
                 flash: None,
                 boot_modes: vec![
                     "BOOT_MD_EDL".into(),
@@ -732,6 +752,10 @@ fn nothing_else_can_actuate_the_board_while_a_normal_boot_runs() {
             ("power", json!({"target": "ovr", "action": "off"})),
             ("normal_boot", json!({"target": "ovr"})),
             ("boot_mode", json!({"device": SM, "mode": "clear"})),
+            (
+                "boot_mode",
+                json!({"target": "ovr", "mode": "BOOT_MD_EDL", "release": true}),
+            ),
         ] {
             let e = rig.err(tool, args.clone());
             assert_eq!(
@@ -829,6 +853,337 @@ fn clear_on_its_own_releases_and_reports_the_readback() {
         r["warning"].as_str().unwrap_or_default().contains("SS_EDL"),
         "a release that left a line held must say which: {r}"
     );
+}
+
+// ------------------------------------------------ per mode: held, and let go ---
+//
+// A dashboard button IS a boot mode, so "is this button lit" has to be answered
+// per mode, by the controller, for whoever set it. And a lit button has to be
+// un-pressable on its own: `clear` releases everything, which is the wrong tool
+// for taking back one mistaken selection on a board held in EDL for a flash.
+
+fn mode_state<'a>(r: &'a Value, mode: &str) -> &'a Value {
+    &r["boot_overrides"]["modes"][mode]["state"]
+}
+
+/// Held and released are each PROVEN by the mode's own line. Nothing else is.
+#[test]
+fn each_mode_says_whether_its_own_line_is_held() {
+    let rig = Rig::new();
+    rig.hold("MD_EDL");
+    rig.switch("unreadable.UEFI", "1");
+    let r = rig.call("boot_overrides", json!({"device": AP}));
+    assert_eq!(
+        r["boot_overrides"]["modes"],
+        json!({
+            "BOOT_MD_EDL": {"line": "MD_EDL", "state": "held"},
+            "BOOT_SS_EDL": {"line": "SS_EDL", "state": "released"},
+            "BOOT_UEFI": {"line": "UEFI", "state": "unknown"},
+            "MD_FASTBOOT": {"line": "FASTBOOT_MD", "state": "released"},
+        }),
+        "{r}"
+    );
+    assert_eq!(r["boot_overrides"]["release"], "per_mode", "{r}");
+}
+
+/// A failed read says nothing about any mode. Not "released": nothing.
+///
+/// A surface draws "not held" from `released`. If a controller that did not
+/// answer produced that word for even one mode, a board held in EDL would show
+/// an unlit EDL button, which is the fault this whole feature exists to expose.
+#[test]
+fn a_failed_read_never_calls_a_mode_released() {
+    let rig = Rig::new();
+    // A good read first, so there IS an earlier table of released modes that a
+    // failed read could wrongly be answered from.
+    let good = rig.call("boot_overrides", json!({"device": AP}));
+    assert_eq!(mode_state(&good, "BOOT_MD_EDL"), "released", "{good}");
+
+    rig.hold("MD_EDL");
+    rig.switch("reads_fail", "1");
+    let r = rig.call("boot_overrides", json!({"device": AP, "max_age_s": 0}));
+    assert_eq!(r["boot_overrides"]["state"], "unknown", "{r}");
+    assert_eq!(r["boot_overrides"]["source"], "controller_read", "{r}");
+    let modes = r["boot_overrides"]["modes"].as_object().unwrap();
+    assert!(
+        modes.values().all(|m| m["state"] != "released"),
+        "a controller that did not answer has not released anything: {r}"
+    );
+}
+
+/// Whoever set it. An agent's `boot_mode` lights the mode for every other
+/// asker at once, and a clear puts every mode back.
+#[test]
+fn a_mode_an_agent_sets_reads_held_for_everyone_until_it_is_cleared() {
+    let rig = Rig::new();
+    rig.lease();
+    // A dashboard has looked recently, so there IS a cached reading to go stale.
+    let before = rig.call("boot_overrides", json!({"device": SM}));
+    assert_eq!(mode_state(&before, "BOOT_UEFI"), "released", "{before}");
+
+    let set = rig.call("boot_mode", json!({"target": "ovr", "mode": "BOOT_UEFI"}));
+    assert_eq!(mode_state(&set, "BOOT_UEFI"), "held", "{set}");
+    // Another asker, inside the cache window, on the board's OTHER console.
+    let seen = rig.call("boot_overrides", json!({"device": SM}));
+    assert_eq!(mode_state(&seen, "BOOT_UEFI"), "held", "{seen}");
+    assert_eq!(
+        seen["boot_overrides"]["source"], "cached_controller_read",
+        "served from the agent's own readback, not from a second read: {seen}"
+    );
+
+    let cleared = rig.call("boot_mode", json!({"target": "ovr", "mode": "clear"}));
+    let seen = rig.call("boot_overrides", json!({"device": SM}));
+    for r in [&cleared, &seen] {
+        for mode in ["BOOT_MD_EDL", "BOOT_SS_EDL", "BOOT_UEFI", "MD_FASTBOOT"] {
+            assert_eq!(mode_state(r, mode), "released", "{mode}: {r}");
+        }
+    }
+}
+
+/// One mode let go, the others left alone.
+#[test]
+fn releasing_one_mode_releases_its_line_and_no_other() {
+    let rig = Rig::new();
+    rig.lease();
+    rig.hold("MD_EDL");
+    rig.hold("UEFI");
+    // Somebody looked a moment ago, so a reading that says UEFI is held is
+    // sitting in the cache, well inside its window, when the release runs.
+    let before = rig.call("boot_overrides", json!({"device": AP}));
+    assert_eq!(mode_state(&before, "BOOT_UEFI"), "held", "{before}");
+    rig.forget_log();
+
+    let r = rig.call(
+        "boot_mode",
+        json!({"target": "ovr", "mode": "BOOT_UEFI", "release": true}),
+    );
+    assert_eq!(
+        rig.log(),
+        vec!["mode-release BOOT_UEFI", "boot-overrides"],
+        "one release, then the controller's own readback, and nothing else"
+    );
+    assert!(!rig.held("UEFI"), "the mode that was let go");
+    assert!(
+        rig.held("MD_EDL"),
+        "the EDL line a flash may be relying on must not move"
+    );
+    assert_eq!(r["released"], true, "{r}");
+    assert_eq!(r["entered"], false, "{r}");
+    assert_eq!(
+        r["next"],
+        Value::Null,
+        "nothing is owed after a release: {r}"
+    );
+    assert_eq!(mode_state(&r, "BOOT_UEFI"), "released", "{r}");
+    assert_eq!(mode_state(&r, "BOOT_MD_EDL"), "held", "{r}");
+    assert_eq!(
+        r["boot_overrides"]["source"], "controller_read",
+        "the answer is a fresh read, never the reading from before: {r}"
+    );
+    assert!(r.get("warning").is_none(), "{r}");
+    // ...and everyone else sees it at once.
+    let seen = rig.call("boot_overrides", json!({"device": SM}));
+    assert_eq!(mode_state(&seen, "BOOT_UEFI"), "released", "{seen}");
+    assert_eq!(mode_state(&seen, "BOOT_MD_EDL"), "held", "{seen}");
+}
+
+/// Never a toggle. Each direction is its own request, so a press made against a
+/// stale picture can only repeat what is already true.
+#[test]
+fn set_and_release_are_each_idempotent_and_never_flip_a_line() {
+    let rig = Rig::new();
+    rig.lease();
+    for _ in 0..2 {
+        let r = rig.call(
+            "boot_mode",
+            json!({"target": "ovr", "mode": "BOOT_UEFI", "release": true}),
+        );
+        assert_eq!(mode_state(&r, "BOOT_UEFI"), "released", "{r}");
+        assert!(
+            !rig.held("UEFI"),
+            "releasing a released mode must not set it"
+        );
+    }
+    for _ in 0..2 {
+        let r = rig.call("boot_mode", json!({"target": "ovr", "mode": "BOOT_UEFI"}));
+        assert_eq!(mode_state(&r, "BOOT_UEFI"), "held", "{r}");
+        assert!(rig.held("UEFI"), "setting a held mode must not release it");
+    }
+    // `release: false` is a set, spelled out.
+    rig.call(
+        "boot_mode",
+        json!({"target": "ovr", "mode": "BOOT_UEFI", "release": false}),
+    );
+    assert!(rig.held("UEFI"));
+}
+
+/// Released means the controller read back released, not that the hook exited 0.
+#[test]
+fn a_release_that_did_not_take_says_so() {
+    let rig = Rig::new();
+    rig.lease();
+    rig.hold("UEFI");
+    rig.switch("stuck.UEFI", "1");
+    let r = rig.call(
+        "boot_mode",
+        json!({"target": "ovr", "mode": "BOOT_UEFI", "release": true}),
+    );
+    assert!(
+        r["warning"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("BOOT_UEFI"),
+        "{r}"
+    );
+    assert_eq!(mode_state(&r, "BOOT_UEFI"), "held", "{r}");
+
+    // A readback that fails proves nothing either.
+    let rig = Rig::new();
+    rig.lease();
+    rig.hold("UEFI");
+    rig.switch("reads_fail", "1");
+    let r = rig.call(
+        "boot_mode",
+        json!({"target": "ovr", "mode": "BOOT_UEFI", "release": true}),
+    );
+    assert!(
+        r["warning"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("BOOT_UEFI"),
+        "an unreadable controller has not confirmed the release: {r}"
+    );
+}
+
+#[test]
+fn a_release_the_controller_rejects_is_an_error_and_moves_nothing_else() {
+    let rig = Rig::new();
+    rig.lease();
+    rig.hold("MD_EDL");
+    rig.hold("UEFI");
+    rig.switch("release_fails", "1");
+    let e = rig.err(
+        "boot_mode",
+        json!({"target": "ovr", "mode": "BOOT_UEFI", "release": true}),
+    );
+    assert_eq!(e["code"], "HOOK_FAILED", "{e}");
+    assert!(rig.held("MD_EDL") && rig.held("UEFI"));
+    assert!(
+        !rig.log()
+            .iter()
+            .any(|l| l.starts_with("power") || l == "mode clear"),
+        "a failed release must not fall back to anything broader: {:?}",
+        rig.log()
+    );
+    // The claim is gone: the board is not wedged behind the failure.
+    rig.call("boot_mode", json!({"target": "ovr", "mode": "clear"}));
+}
+
+#[test]
+fn a_release_is_an_actuation_and_needs_the_lease() {
+    let rig = Rig::new();
+    rig.hold("UEFI");
+    let args = json!({"target": "ovr", "mode": "BOOT_UEFI", "release": true});
+    let e = rig.err("boot_mode", args.clone());
+    assert_eq!(e["code"], "LEASE_REQUIRED", "{e}");
+    rig.leased_by_someone_else();
+    let e = rig.err("boot_mode", args);
+    assert_eq!(e["code"], "LEASE_REQUIRED", "{e}");
+    assert!(rig.log().is_empty(), "{:?}", rig.log());
+    assert!(rig.held("UEFI"));
+}
+
+#[test]
+fn a_release_is_refused_while_another_actuation_runs() {
+    let rig = Rig::new();
+    rig.lease();
+    rig.hold("MD_EDL");
+    rig.switch("power_slow", "2");
+    std::thread::scope(|s| {
+        let first = s.spawn(|| rig.raw("power", json!({"target": "ovr", "action": "off"})));
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let e = rig.err(
+            "boot_mode",
+            json!({"target": "ovr", "mode": "BOOT_MD_EDL", "release": true}),
+        );
+        assert_eq!(e["code"], "ACTUATION_IN_FLIGHT", "{e}");
+        first.join().unwrap();
+    });
+    assert!(rig.held("MD_EDL"));
+    assert!(
+        !rig.log().iter().any(|l| l.starts_with("mode-release")),
+        "{:?}",
+        rig.log()
+    );
+}
+
+#[test]
+fn a_release_names_one_configured_mode_or_is_refused_before_the_controller() {
+    let rig = Rig::new();
+    rig.lease();
+    rig.hold("MD_EDL");
+    for (mode, why) in [
+        ("clear", "clear already releases everything"),
+        ("normal", "so does its alias"),
+        ("BOOT_NOPE", "not a configured mode"),
+        ("MD_EDL", "a LINE name is not a mode"),
+    ] {
+        let e = rig.err(
+            "boot_mode",
+            json!({"target": "ovr", "mode": mode, "release": true}),
+        );
+        assert_eq!(e["code"], "INVALID_ARGUMENT", "{mode} ({why}): {e}");
+    }
+    assert!(rig.log().is_empty(), "{:?}", rig.log());
+    assert!(rig.held("MD_EDL"));
+}
+
+/// A controller that can only release everything says so up front, and the
+/// refusal points at the thing that does work.
+#[test]
+fn a_controller_that_cannot_release_one_mode_refuses_and_points_at_clear() {
+    let rig = Rig::without_a_release_hook();
+    rig.lease();
+    rig.hold("MD_EDL");
+    rig.hold("UEFI");
+    let seen = rig.call("boot_overrides", json!({"device": AP}));
+    assert_eq!(seen["boot_overrides"]["release"], "all_only", "{seen}");
+    rig.forget_log();
+
+    let e = rig.err(
+        "boot_mode",
+        json!({"target": "ovr", "mode": "BOOT_UEFI", "release": true}),
+    );
+    assert_eq!(e["code"], "HOOK_NOT_CONFIGURED", "{e}");
+    assert!(
+        e["hint"].as_str().unwrap_or_default().contains("clear"),
+        "{e}"
+    );
+    assert!(
+        rig.log().is_empty(),
+        "it must NOT quietly clear everything instead: {:?}",
+        rig.log()
+    );
+    assert!(rig.held("MD_EDL") && rig.held("UEFI"));
+}
+
+#[test]
+fn a_release_dry_run_shows_the_command_and_touches_nothing() {
+    let rig = Rig::new();
+    rig.hold("UEFI");
+    let r = rig.call(
+        "boot_mode",
+        json!({"target": "ovr", "mode": "BOOT_UEFI", "release": true, "dry_run": true}),
+    );
+    assert_eq!(r["release"], true, "{r}");
+    let cmd = r["hook"]["command"].to_string();
+    assert!(
+        cmd.contains("mode-release") && cmd.contains("BOOT_UEFI"),
+        "{r}"
+    );
+    assert!(cmd.contains(CTL), "aimed at this board's controller: {r}");
+    assert!(rig.log().is_empty(), "{:?}", rig.log());
+    assert!(rig.held("UEFI"));
 }
 
 // ------------------------------------------------ the real hook, on a real tty ---
