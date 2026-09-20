@@ -4379,6 +4379,88 @@ fn a_boot_mode_press_publishes_its_own_readback_at_once() {
     assert!(v["devices"].is_array());
 }
 
+/// Pressing a LIT mode button lets go of that ONE mode.
+///
+/// Asserted on what reaches mcpd. The press is `boot_mode` with `release`, for
+/// the mode that was pressed; it is never widened into a `clear`, which would
+/// drop the EDL line a flash is relying on, and it is never a second `boot_mode`
+/// that sets the mode again. What the controller reads back afterwards is on the
+/// page at once, with the per-mode table the buttons are lit from.
+#[test]
+fn a_release_press_releases_that_one_mode_and_shows_the_readback_at_once() {
+    let mut after = held_md_edl();
+    after["modes"] = serde_json::json!({
+        "BOOT_MD_EDL": {"line": "MD_EDL", "state": "held"},
+        "BOOT_UEFI": {"line": "UEFI", "state": "released"},
+    });
+    after["release"] = serde_json::json!("per_mode");
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "boot_mode".to_string(),
+        serde_json::json!({"mode": "BOOT_UEFI", "released": true, "boot_overrides": after}),
+    );
+    let mcp = FakeMcp::start_answering("unused", answers);
+    let mut c = cfg();
+    c.dashboard.allow_power = true;
+    c.dashboard.mcp_url = mcp.url.clone();
+    let rig = Rig::start(c);
+    let (ap, sm) = a_bantam_board(&rig);
+    rig.until("the board", |v| {
+        v["devices"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|d| d["canonical"] == ap))
+    });
+
+    let enc = ap.replace('/', "%2F");
+    let (code, body) = rig.post(&format!("/api/boot_mode/{enc}/BOOT_UEFI/release"));
+    assert_eq!(code, 200, "{body}");
+
+    let acts: Vec<String> = mcp
+        .names()
+        .into_iter()
+        .filter(|n| n != "diagnose")
+        .collect();
+    assert_eq!(
+        acts,
+        vec!["acquire", "boot_mode", "release"],
+        "one actuation under the press lease, and nothing beside it"
+    );
+    let args = mcp.args_of("boot_mode").expect("the boot_mode call");
+    assert_eq!(args["mode"], "BOOT_UEFI", "{args}");
+    assert_eq!(args["release"], true, "a release, not a second set: {args}");
+    assert_eq!(args["device"], ap, "{args}");
+
+    rig.until("the per-mode table on BOTH consoles", |v| {
+        v["devices"].as_array().is_some_and(|a| {
+            [ap, sm].iter().all(|n| {
+                a.iter().any(|d| {
+                    d["canonical"] == *n
+                        && d["boot_overrides"]["modes"]["BOOT_UEFI"]["state"] == "released"
+                        && d["boot_overrides"]["modes"]["BOOT_MD_EDL"]["state"] == "held"
+                        && d["boot_overrides"]["release"] == "per_mode"
+                })
+            })
+        })
+    });
+
+    // The plain press is still a SET: same route without the suffix, no flag.
+    let (code, _) = rig.post(&format!("/api/boot_mode/{enc}/BOOT_UEFI"));
+    assert_eq!(code, 200);
+    let sets: Vec<serde_json::Value> = mcp
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(n, _)| n == "boot_mode")
+        .map(|(_, a)| a.clone())
+        .collect();
+    assert_eq!(sets.len(), 2, "{sets:?}");
+    assert!(
+        sets[1].get("release").is_none(),
+        "a set must not carry the release flag: {sets:?}"
+    );
+}
+
 /// The Normal boot press is ONE mcpd actuation, under the usual press lease.
 ///
 /// The sequencing (release, verify, cycle, abort before cycling) lives in mcpd

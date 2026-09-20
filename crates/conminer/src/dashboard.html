@@ -406,6 +406,18 @@ button.act { min-width: 62px; }
 button.act.busy { opacity: .6; cursor: progress; }
 button.act.ok { color: var(--live); border-color: var(--live); }
 button.act.fail { color: var(--danger); border-color: var(--danger); }
+/* A boot-mode button is also a LAMP: lit while the controller reads that mode's
+   line as held, whoever set it. Lit from the controller's own reading, never
+   from "somebody clicked this", so it goes out when an agent releases the line
+   and comes on when an agent sets one. Unknown is drawn as unknown: a dashed
+   button is not an unlit one. */
+button.act.held { color: var(--live); border-color: var(--live); font-weight: 650;
+  background: color-mix(in srgb, var(--live) 16%, transparent); }
+button.act.held::before { content: "\25CF\00a0"; font-size: 9px; vertical-align: 1px; }
+button.act.held-unknown { border-style: dashed; color: var(--muted); }
+#modes, #recover { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+#powerheld { flex-basis: 100%; }
+#powerheld .ctl-row { margin-top: 2px; }
 .power-msg { font-size: 12px; color: var(--muted); margin-left: 4px;
              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A board controller is not a console that failed to open; it is the thing that
@@ -618,7 +630,13 @@ kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line);
       <span class="sep" id="modesep"></span>
       <span class="power-label" id="modelabel">Boot mode</span>
       <span id="modes"></span>
+      <span id="recover"></span>
       <span class="power-msg" id="powermsg"></span>
+      <!-- What the controller HOLDS across boots, for the board this bar drives.
+           A console in its own window has no rack beside it, so without this a
+           person flashing from here could not see the line that decides the
+           next boot. -->
+      <div id="powerheld"></div>
     </div>
   </section>
 </main>
@@ -1246,43 +1264,145 @@ function controllerCard(d) {
       mkBtn(a[0].toUpperCase() + a.slice(1),
             `/api/power/${encodeURIComponent(d.device)}/${a}`, `power ${a}`, a));
   }
-  const modes = d.boot_modes || [];
+  const press = (b, url, what) => actOn(b, url, what, msg, box);
   box.appendChild(overridesRow(d));
-  if (d.has_power_hook && modes.length) {
-    // One press out of a latched mode. Power Cycle looks like "boot it normally"
-    // and releases nothing: a board left in EDL goes straight back to EDL, which
-    // reads as dead firmware. This releases every override, requires the
-    // controller to read them back released, and only then cycles. It refuses to
-    // cycle if that proof fails, and says so.
-    const row = bar("Recover", ["normal_boot"], () => {
-      const b = mkBtn("Normal boot", `/api/normal_boot/${encodeURIComponent(d.device)}`,
-                      "normal boot", "normal_boot");
-      b.title = "Release every boot override, verify the readback, then power cycle. " +
-                "Aborts before cycling if the release cannot be proven.";
-      return b;
-    });
+  if (offersNormalBoot(d)) {
+    const row = bar("Recover", ["normal_boot"], () => normalBootButton(d, press));
     if (row) row.dataset.recover = d.device;
   }
-  if (modes.length) {
-    // "clear" alongside the modes, ALWAYS.
-    //
-    // On a strap-latching controller (Bantam) selecting a mode only ARMS it: the
-    // strap stays set, so every later boot lands in that mode until something
-    // clears it. The page offered no way to do that. A person could put a board
-    // into EDL from here and then had to find a terminal to get it out -- and
-    // the board looked broken in the meantime, booting to EDL again after every
-    // reset. `clear` is accepted by every controller, so it belongs next to the
-    // buttons that create the condition it undoes.
-    bar("Boot mode", [...modes, "clear"], m =>
-      mkBtn(m === "clear" ? "Clear" : m,
-            `/api/boot_mode/${encodeURIComponent(d.device)}/${encodeURIComponent(m)}`, m,
-            `mode:${m}`));
-  }
+  bar("Boot mode", modeList(d), m => modeButton(d, m, press));
+  paintHeld(box, d);
   const last = document.createElement("div");
   last.className = "ctl-row";
   last.appendChild(msg);
   box.appendChild(last);
   return box;
+}
+
+// ---- boot-mode controls, shared by EVERY surface that offers them ----------
+//
+// The rack's controller panel and the console's power bar are two places to do
+// the same thing to the same board. They were built by two pieces of code, and
+// the console's copy fell behind: no Clear, no Normal boot, and nothing about
+// what the controller holds. In a console popped out into its own window that
+// is the whole page, so a person flashing from there could put a board into EDL
+// and had no way to see it was still held or to take it back. One set of
+// builders, so a control added to one surface cannot be missing from the other.
+
+/// The boot-mode buttons a board gets: its modes, then "clear", ALWAYS.
+///
+/// On a strap-latching controller (Bantam) selecting a mode only ARMS it: the
+/// strap stays set, so every later boot lands in that mode until something
+/// clears it. `clear` is accepted by every controller, so it belongs next to the
+/// buttons that create the condition it undoes.
+function modeList(d) {
+  const modes = d.boot_modes || [];
+  return modes.length ? [...modes, "clear"] : [];
+}
+
+/// One press out of a latched mode. Power Cycle looks like "boot it normally"
+/// and releases nothing: a board left in EDL goes straight back to EDL, which
+/// reads as dead firmware. Normal boot releases every override, requires the
+/// controller to read them back released, and only then cycles. It refuses to
+/// cycle if that proof fails, and says so.
+function offersNormalBoot(d) {
+  return !!d.has_power_hook && (d.boot_modes || []).length > 0;
+}
+
+function normalBootButton(d, press) {
+  const b = document.createElement("button");
+  b.className = "act";
+  b.textContent = "Normal boot";
+  b.title = "Release every boot override, verify the readback, then power cycle. " +
+            "Aborts before cycling if the release cannot be proven.";
+  b.dataset.power = "normal_boot";
+  b.dataset.device = d.device;
+  b.onclick = (e) => {
+    e.stopPropagation();
+    press(b, `/api/normal_boot/${encodeURIComponent(d.device)}`, "normal boot");
+  };
+  return b;
+}
+
+/// One boot-mode button. It is a control AND a lamp (see `paintHeld`).
+///
+/// What a press does is decided from what the button shows, at the press. A lit
+/// button releases that one mode; an unlit one sets it. Each is its own request
+/// to its own endpoint, never "toggle": if the picture had gone stale the press
+/// repeats something already true, where a toggle would flip a line the person
+/// never saw. A controller that cannot release one mode on its own posts
+/// nothing and says to use Clear, because quietly clearing EVERY line would
+/// drop the EDL a flash is relying on.
+function modeButton(d, m, press) {
+  const b = document.createElement("button");
+  b.className = "act";
+  b.textContent = m === "clear" ? "Clear" : m;
+  // A phone clips the label to fit two columns, and a boot mode you cannot
+  // read in full is one you can pick by mistake. The whole name stays here.
+  b.title = m === "clear" ? "Release every boot override the controller holds" : m;
+  // Identity, so a test (and a person with devtools) can tell WHICH board a
+  // click would actuate. EDL on the wrong board is the worst version of this.
+  b.dataset.power = `mode:${m}`;
+  b.dataset.mode = m;
+  b.dataset.device = d.device;
+  b.onclick = (e) => {
+    e.stopPropagation();
+    const base = `/api/boot_mode/${encodeURIComponent(d.device)}/${encodeURIComponent(m)}`;
+    if (b.dataset.held !== "held") return press(b, base, m);
+    if (b.dataset.release === "per_mode") return press(b, `${base}/release`, `release ${m}`);
+    press(b, null, `${m} is held, and this controller can only release everything: use Clear`);
+  };
+  return b;
+}
+
+/// Light every boot-mode button in `scope` from the CONTROLLER's reading of this
+/// board, in place.
+///
+/// From the reading, never from the click. The same reading reaches this page
+/// whoever changed the line: a press here, an agent's `boot_mode` over MCP, a
+/// `normal_boot`. So a button lights when an agent sets its mode and goes out
+/// when an agent releases it, and a press that failed lights nothing.
+///
+/// Three states, because unlit has to MEAN released. A controller that did not
+/// answer, or has not been read yet, draws every button as unknown: an unlit EDL
+/// button on a board that is in fact held in EDL is the exact fault this exists
+/// to expose. A controller with no way to be read at all stays plain, and the
+/// row beside the buttons says it cannot be read.
+///
+/// In place, without rebuilding, because the console's bar is not redrawn with
+/// the rack: replacing a button between mousedown and mouseup swallows the
+/// click, and replacing one mid-press loses the press's own feedback.
+function paintHeld(scope, d) {
+  const o = d.boot_overrides;
+  const readable = !o || o.supported !== false;
+  const nothingKnown = !o || (readable && o.state === "unknown");
+  for (const b of scope.querySelectorAll("button[data-mode]")) {
+    if (b.dataset.device !== d.device || b.dataset.mode === "clear") continue;
+    const m = b.dataset.mode;
+    const entry = o && o.modes ? o.modes[m] : null;
+    let held = "";
+    if (!readable) held = "";
+    else if (entry) held = entry.state;
+    else if (nothingKnown) held = "unknown";
+    b.dataset.held = held;
+    b.dataset.release = (o && o.release) || "";
+    b.classList.toggle("held", held === "held");
+    b.classList.toggle("held-unknown", held === "unknown");
+    b.setAttribute("aria-pressed",
+                   held === "held" ? "true" : held === "unknown" ? "mixed" : "false");
+    const line = entry && entry.line ? ` (${entry.line})` : "";
+    b.title =
+      held === "held"
+        ? `${m} is HELD by the controller${line}: every boot goes there until it is released. ` +
+          (b.dataset.release === "per_mode" ? "Press to release just this one."
+                                            : "Use Clear to release it.")
+      : held === "unknown"
+        ? `${m}: the controller has not said whether this is held. That is not "released".`
+      : held === "released"
+        ? `${m}: not held${line}. Press to hold it: the board enters it on its next boot ` +
+          "and every boot after, until it is released."
+      : m;
+  }
 }
 
 /// What this board's controller is HOLDING across boots, read from the
@@ -1341,7 +1461,8 @@ function overridesRow(d) {
     const why = document.createElement("div");
     why.className = "ovr-why";
     why.textContent = "Survives power cycles: every boot goes there until it is released. " +
-                      "Clear releases it; Normal boot releases, verifies and cycles.";
+                      (o.release === "per_mode" ? "The lit button releases that one mode; " : "") +
+                      "Clear releases everything; Normal boot releases, verifies and cycles.";
     row.appendChild(why);
   }
   return row;
@@ -1586,6 +1707,7 @@ function feed() {
   es.addEventListener("devices", (ev) => {
     const snap = JSON.parse(ev.data);
     ingest(snap);
+    refreshPower();
     $("txmode").textContent = snap.allow_tx ? "TX enabled" : "read-only server";
     $("txmode").className = "pill " + (snap.allow_tx ? "warn" : "ok");
     $("slots").textContent = `ser2net: ${snap.max_connections} clients/port`;
@@ -2215,6 +2337,7 @@ function tx(bytes) {
 // actuation an agent performs: the epoch opens and the event lands on the
 // timeline. The button reports what actually happened rather than assuming.
 async function actOn(btn, url, what, msgEl, scope) {
+  if (!url) { msgEl.textContent = what; return; }
   const all = scope.querySelectorAll(".act");
   all.forEach(b => { b.disabled = true; });
   btn.classList.add("busy");
@@ -2239,6 +2362,7 @@ async function actOn(btn, url, what, msgEl, scope) {
 }
 
 async function act(btn, url, what) {
+  if (!url) { $("powermsg").textContent = what; return; }
   const sel = "#power .act";
   document.querySelectorAll(sel).forEach(b => { b.disabled = true; });
   btn.classList.add("busy");
@@ -2288,6 +2412,10 @@ function wirePower(d) {
   // and readable by a test, so "did the click hit the right board?" has an
   // answer instead of a hope.
   bar.dataset.device = d.device;
+  // The last board's mode buttons go BEFORE anything below runs: they carry
+  // `data-power` too, and must not be re-enabled or rebound for a moment as if
+  // they belonged to this board.
+  for (const id of ["modes", "recover", "powerheld"]) $(id).innerHTML = "";
   // Bound now, so it is safe to use. Before this runs the bar has no device and
   // must not be clickable -- see the guard where it is hidden.
   for (const b of bar.querySelectorAll("[data-power]")) b.disabled = false;
@@ -2304,20 +2432,37 @@ function wirePower(d) {
     b.onclick = () => act(b, `/api/power/${encodeURIComponent(d.device)}/${b.dataset.power}`,
                           `power ${b.dataset.power}`);
   }
-  const modes = $("modes");
-  modes.innerHTML = "";
-  const list = d.boot_modes || [];
+  // The SAME boot-mode controls the rack's controller panel has, from the same
+  // builders: every mode, Clear, Normal boot, and what the controller holds.
+  const list = modeList(d);
   $("modesep").style.display = list.length && d.has_power_hook ? "" : "none";
   $("modelabel").style.display = list.length ? "" : "none";
-  for (const m of list) {
-    const b = document.createElement("button");
-    b.className = "act";
-    b.textContent = m;
-    b.title = `Bring the board up in ${m}`;
-    b.onclick = () => act(b, `/api/boot_mode/${encodeURIComponent(d.device)}/${encodeURIComponent(m)}`,
-                          m);
-    modes.appendChild(b);
+  for (const m of list) $("modes").appendChild(modeButton(d, m, act));
+  if (offersNormalBoot(d)) {
+    const l = document.createElement("span");
+    l.className = "power-label";
+    l.textContent = "Recover";
+    $("recover").append(l, normalBootButton(d, act));
   }
+  refreshPower();
+}
+
+/// Bring the console's power bar up to date with the newest snapshot, in place.
+///
+/// The rack is rebuilt on every device event and picks up a new reading for
+/// free. This bar is built once, when its console opens, so without this it
+/// would show what the controller held at that moment for as long as the window
+/// stayed open: a lit EDL button an agent released an hour ago.
+function refreshPower() {
+  const bar = $("power");
+  const device = bar.dataset.device;
+  if (!device || bar.classList.contains("hidden")) return;
+  const d = state.devices.find(x => x.device === device);
+  if (!d) return;
+  paintHeld(bar, d);
+  const held = $("powerheld");
+  held.innerHTML = "";
+  if ((d.boot_modes || []).length) held.appendChild(overridesRow(d));
 }
 
 $("mode").onclick = () => setSend(!state.send);

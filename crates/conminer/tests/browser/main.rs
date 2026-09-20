@@ -59,6 +59,9 @@ impl FakePort {
 /// A dashboard serving real devices, for the browser to load.
 struct Rig {
     base: String,
+    /// The served dashboard itself, so a test can publish what a sweep would
+    /// have and watch the page react to the live event.
+    dash: conminer::dash::Dash,
     _dir: tempfile::TempDir,
     _rt: tokio::runtime::Runtime,
     _stop: tokio::sync::watch::Sender<bool>,
@@ -423,10 +426,14 @@ impl Rig {
         let (stop, rx) = tokio::sync::watch::channel(false);
         let bind = config.dashboard.bind.clone();
         let data = dir.path().to_path_buf();
+        let dash = {
+            let _in_runtime = rt.enter();
+            conminer::dash::Dash::new(config, data)
+        };
+        let served = dash.clone();
         rt.spawn(async move {
-            let dash = conminer::dash::Dash::new(config, data);
-            let _ = dash.refresh();
-            let _ = conminer::dash::serve(dash, &bind, rx).await;
+            let _ = served.refresh();
+            let _ = conminer::dash::serve(served, &bind, rx).await;
         });
 
         let base = format!("http://{addr}");
@@ -442,10 +449,24 @@ impl Rig {
         }
         Self {
             base,
+            dash,
             _dir: dir,
             _rt: rt,
             _stop: stop,
         }
+    }
+
+    /// File a controller reading the way the status sweep does, and tell the
+    /// page. `controller` is the controller's own canonical, which is what a
+    /// board's rows are keyed on.
+    fn controller_reads(&self, controller: &str, reading: Value) {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        self.dash
+            .publish_overrides(&[controller.to_string()], Some(reading), at);
+        let _ = self.dash.refresh();
     }
 }
 
@@ -2973,4 +2994,520 @@ fn the_normal_boot_button_is_one_request_to_its_own_endpoint() {
             .contains("Aborts before cycling"),
         "and the button must say what it refuses to do: {v}"
     );
+}
+
+// ------------------------------------- held modes: the popout, and lit buttons ---
+
+const CLICK_AP: &str = "/dev/serial/by-id/usb-FTDI_ClickBoard_CCCC-if00-port0";
+const CLICK_CTL: &str = "/dev/serial/by-id/usb-Microchip_Technology_Inc._Bantam_CLICKCTRL-if00";
+
+/// A controller reading as mcpd renders it, with the per-mode table.
+fn reading(held: &[&str], unknown: &[&str], release: &str) -> Value {
+    let lines = [
+        ("BOOT_MD_EDL", "MD_EDL"),
+        ("BOOT_SS_EDL", "SS_EDL"),
+        ("BOOT_UEFI", "UEFI"),
+        ("MD_FASTBOOT", "FASTBOOT_MD"),
+    ];
+    let mut modes = serde_json::Map::new();
+    let mut asserted = Vec::new();
+    let mut unread = Vec::new();
+    for (mode, line) in lines {
+        let state = if held.contains(&mode) {
+            asserted.push(line);
+            "held"
+        } else if unknown.contains(&mode) {
+            unread.push(line);
+            "unknown"
+        } else {
+            "released"
+        };
+        modes.insert(
+            mode.to_string(),
+            serde_json::json!({"line": line, "state": state}),
+        );
+    }
+    let state = if !asserted.is_empty() {
+        "latched"
+    } else if !unread.is_empty() {
+        "unknown"
+    } else {
+        "clear"
+    };
+    serde_json::json!({
+        "supported": true, "state": state, "overrides": {}, "asserted": asserted,
+        "unknown": unread, "modes": modes, "release": release, "effect": "x",
+        "read_at_ms": 1_700_000_000_000_i64,
+    })
+}
+
+/// Page-side helpers shared by the gates below: `paint(reading)` puts a reading
+/// on every row the way a snapshot would, and `look(scope)` reports every
+/// boot-mode button in a scope.
+const HELD_HELPERS: &str = r#"
+  const paint = (reading) => {
+    for (const d of state.devices) d.boot_overrides = reading;
+    state.server_now = 1700000012000;
+    render();
+    refreshPower();
+  };
+  const look = (scope) => [...document.querySelectorAll(scope + " button[data-mode]")].map(b => ({
+    mode: b.dataset.mode, lit: b.classList.contains("held"),
+    unknown: b.classList.contains("held-unknown"), held: b.dataset.held,
+    pressed: b.getAttribute("aria-pressed"), device: b.dataset.device, title: b.title,
+  }));
+  const ap = () => state.devices.find(d => d.device.includes("ClickBoard") && d.device.includes("if00"));
+"#;
+
+/// The reported nit. A console popped out into its own window is the whole
+/// page: the rack, and the controller panel with its "Held across boots" row,
+/// are not there. The bar under that console offered the boot modes and nothing
+/// else, so a person flashing from the popout could put a board into EDL and
+/// then could not see that it was still held, clear it, or boot out of it.
+#[test]
+fn a_popped_out_console_shows_what_is_held_and_every_way_out() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_with_board();
+    let held = reading(&["BOOT_MD_EDL"], &[], "per_mode");
+    let probe = format!(
+        r##"(() => {{
+          {HELD_HELPERS}
+          for (const d of state.devices) d.boot_overrides = {held};
+          state.server_now = 1700000012000;
+          openConsole(ap());
+          const bar = document.getElementById("power");
+          const row = bar.querySelector(".ctl-row.ovr");
+          const names = [...bar.querySelectorAll("button.act")].map(b => b.textContent.trim());
+          return JSON.stringify({{
+            solo: document.querySelector("main").classList.contains("solo"),
+            rack_shown: getComputedStyle(document.getElementById("grid")).display !== "none",
+            bar_shown: bar.getBoundingClientRect().height > 0,
+            row: row && {{label: row.querySelector(".lbl").textContent, text: row.textContent,
+                         state: row.dataset.state, shown: row.getBoundingClientRect().height > 0,
+                         held: [...row.querySelectorAll(".ovr-chip.held")].map(c => c.textContent)}},
+            names, modes: look("#power"),
+            overflow: document.documentElement.scrollWidth > window.innerWidth,
+          }});
+        }})()"##
+    );
+    let out = browser.eval_after_load(
+        &format!(
+            "{}/?nostream=1&console={}",
+            rig.base,
+            CLICK_AP.replace('/', "%2F")
+        ),
+        Duration::from_millis(1500),
+        &probe,
+    );
+    let v: Value = serde_json::from_str(out.as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(v["solo"], true, "this must be the popout layout: {v}");
+    assert_eq!(v["rack_shown"], false, "with no rack to fall back on: {v}");
+    assert_eq!(v["bar_shown"], true, "{v}");
+
+    assert_eq!(v["row"]["label"], "Held across boots", "{v}");
+    assert_eq!(v["row"]["shown"], true, "{v}");
+    assert_eq!(v["row"]["held"], serde_json::json!(["MD_EDL held"]), "{v}");
+    assert!(
+        v["row"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("12 s ago"),
+        "with the age of the controller reading: {v}"
+    );
+
+    let names: Vec<&str> = v["names"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    for want in [
+        "Clear",
+        "Normal boot",
+        "BOOT_MD_EDL",
+        "SS_MD_FASTBOOT",
+        "Cycle",
+    ] {
+        assert!(
+            names.contains(&want),
+            "the popout must offer `{want}`, as the rack does: {names:?}"
+        );
+    }
+    let lit: Vec<&str> = v["modes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["lit"] == true)
+        .filter_map(|m| m["mode"].as_str())
+        .collect();
+    assert_eq!(lit, vec!["BOOT_MD_EDL"], "{v}");
+    assert_eq!(
+        v["overflow"], false,
+        "and the wider bar must still fit: {v}"
+    );
+
+    // On a phone too. The bar now carries seven more controls and a row of
+    // text, and "SS_MD_FASTBOOT" is the token that turns a tidy bar into a page
+    // that pans sideways.
+    let out = browser.eval_on_phone(
+        &format!(
+            "{}/?nostream=1&console={}",
+            rig.base,
+            CLICK_AP.replace('/', "%2F")
+        ),
+        Duration::from_millis(1500),
+        &probe,
+    );
+    let phone: Value = serde_json::from_str(out.as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    assert_eq!(phone["row"]["shown"], true, "{phone}");
+    assert_eq!(
+        phone["overflow"], false,
+        "the popout must not pan sideways on a phone: {phone}"
+    );
+}
+
+/// A button is lit by the controller's reading, and unlit means released.
+///
+/// Every state a reading can be in, on BOTH surfaces, which must agree. The ones
+/// that matter most are the ones where nothing is known: a controller that did
+/// not answer, or has not been read, must not draw an unlit EDL button, because
+/// an unlit button on a board held in EDL is the fault this exists to expose.
+#[test]
+fn a_mode_button_is_lit_by_the_controllers_reading_and_unlit_means_released() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_with_board();
+    let cases = serde_json::json!({
+        "held": reading(&["BOOT_MD_EDL"], &[], "per_mode"),
+        "two_held": reading(&["BOOT_MD_EDL", "BOOT_UEFI"], &[], "per_mode"),
+        "clear": reading(&[], &[], "per_mode"),
+        "one_unknown": reading(&["BOOT_MD_EDL"], &["BOOT_UEFI"], "per_mode"),
+        "failed_read": {"supported": true, "state": "unknown", "overrides": {}, "asserted": [],
+                        "unknown": [], "modes": {}, "release": "per_mode",
+                        "error": "controller did not answer", "read_at_ms": 1_700_000_000_000_i64},
+        "unsupported": {"supported": false, "state": "unsupported", "why": "no read hook"},
+        "not_read": null,
+    });
+    let probe = format!(
+        r##"(() => {{
+          {HELD_HELPERS}
+          openConsole(ap());
+          const cases = {cases};
+          const out = {{}};
+          for (const [name, r] of Object.entries(cases)) {{
+            paint(r);
+            out[name] = {{rack: look(".ctl"), bar: look("#power")}};
+          }}
+          return JSON.stringify(out);
+        }})()"##
+    );
+    let out = browser.eval_after_load(
+        &format!("{}/?nostream=1", rig.base),
+        Duration::from_millis(1500),
+        &probe,
+    );
+    let v: Value = serde_json::from_str(out.as_str().unwrap_or("null")).unwrap_or(Value::Null);
+
+    // (lit, unknown) per mode, for one surface of one case.
+    let picture = |case: &str, surface: &str| -> Vec<(String, bool, bool)> {
+        v[case][surface]
+            .as_array()
+            .unwrap_or_else(|| panic!("no `{surface}` buttons for `{case}`: {v}"))
+            .iter()
+            .map(|m| {
+                (
+                    m["mode"].as_str().unwrap_or_default().to_string(),
+                    m["lit"] == true,
+                    m["unknown"] == true,
+                )
+            })
+            .collect()
+    };
+    let expect = |case: &str, lit: &[&str], unknown: &[&str]| {
+        for surface in ["rack", "bar"] {
+            let got = picture(case, surface);
+            assert_eq!(
+                got.len(),
+                6,
+                "five modes and Clear on the {surface}: {got:?}"
+            );
+            for (mode, is_lit, is_unknown) in &got {
+                assert_eq!(
+                    *is_lit,
+                    lit.contains(&mode.as_str()),
+                    "`{case}` on the {surface}: {mode} lit? {got:?}"
+                );
+                assert_eq!(
+                    *is_unknown,
+                    unknown.contains(&mode.as_str()),
+                    "`{case}` on the {surface}: {mode} unknown? {got:?}"
+                );
+            }
+        }
+    };
+    let all = [
+        "BOOT_MD_EDL",
+        "BOOT_SS_EDL",
+        "BOOT_UEFI",
+        "MD_FASTBOOT",
+        "SS_MD_FASTBOOT",
+    ];
+
+    expect("held", &["BOOT_MD_EDL"], &[]);
+    expect("two_held", &["BOOT_MD_EDL", "BOOT_UEFI"], &[]);
+    expect("clear", &[], &[]);
+    expect("one_unknown", &["BOOT_MD_EDL"], &["BOOT_UEFI"]);
+    // Nothing is known, so nothing may look released. Clear is never a lamp.
+    expect("failed_read", &[], &all);
+    expect("not_read", &[], &all);
+    // No way to read this controller at all: plain buttons, and the row beside
+    // them says it cannot be read.
+    expect("unsupported", &[], &[]);
+
+    // A lit button says so to a screen reader too, and says what a press does.
+    let edl = &v["held"]["bar"][0];
+    assert_eq!(edl["mode"], "BOOT_MD_EDL", "{edl}");
+    assert_eq!(edl["pressed"], "true", "{edl}");
+    assert!(
+        edl["title"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("release just this one"),
+        "{edl}"
+    );
+    assert_eq!(v["failed_read"]["bar"][0]["pressed"], "mixed", "{v}");
+    assert_eq!(v["clear"]["bar"][0]["pressed"], "false", "{v}");
+}
+
+/// Whoever set it, and without a rebuild. An agent sets a mode over MCP while a
+/// console is open in its own window: the button lights on the next snapshot. It
+/// releases it: the button goes out. And it is the SAME button throughout,
+/// because the bar is not redrawn with the rack, and replacing a button under a
+/// pointer swallows the click.
+///
+/// Driven through the live event stream, from the served dashboard's own cache,
+/// which is exactly where the status sweep files what mcpd read.
+#[test]
+fn an_agents_change_lights_and_unlights_the_open_consoles_button_in_place() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_with_board();
+    rig.controller_reads(CLICK_CTL, reading(&[], &[], "per_mode"));
+    let url = format!("{}/?console={}", rig.base, CLICK_AP.replace('/', "%2F"));
+    let wait_for = |what: &str, cond: &str| -> Value {
+        let probe = format!(
+            r##"(() => new Promise(r => {{
+              const t0 = Date.now();
+              const tick = () => {{
+                const b = document.querySelector('#power button[data-mode="BOOT_MD_EDL"]');
+                const row = document.querySelector("#power .ctl-row.ovr");
+                const ok = b && row && ({cond});
+                if (ok || Date.now() - t0 > 15000) {{
+                  window.__edl = window.__edl || b;
+                  r(JSON.stringify({{ok: !!ok, same: b === window.__edl,
+                    lit: !!b && b.classList.contains("held"), row: row && row.dataset.state,
+                    shown: !!b && b.getBoundingClientRect().height > 0}}));
+                }} else setTimeout(tick, 100);
+              }};
+              tick();
+            }}))()"##
+        );
+        let out = browser.eval_within(
+            &url,
+            Duration::from_millis(1500),
+            &probe,
+            Duration::from_secs(25),
+        );
+        let v: Value = serde_json::from_str(out.as_str().unwrap_or("null")).unwrap_or(Value::Null);
+        assert_eq!(v["ok"], true, "{what}: {v}");
+        v
+    };
+
+    let first = wait_for(
+        "the popout opens its console and binds the bar, nothing held",
+        r#"!b.classList.contains("held") && row.dataset.state === "clear""#,
+    );
+    assert_eq!(first["shown"], true, "{first}");
+
+    // An agent's `boot_mode BOOT_MD_EDL`, as the sweep reports it.
+    rig.controller_reads(CLICK_CTL, reading(&["BOOT_MD_EDL"], &[], "per_mode"));
+    let lit = wait_for(
+        "the EDL button lights from the snapshot alone",
+        r#"b.classList.contains("held") && row.dataset.state === "latched""#,
+    );
+    assert_eq!(lit["same"], true, "lit in place, not rebuilt: {lit}");
+
+    // The agent clears it.
+    rig.controller_reads(CLICK_CTL, reading(&[], &[], "per_mode"));
+    let out = wait_for(
+        "and goes out when the line is released",
+        r#"!b.classList.contains("held") && row.dataset.state === "clear""#,
+    );
+    assert_eq!(out["same"], true, "{out}");
+}
+
+/// What a press does follows what the button shows. Lit: release that one mode.
+/// Unlit: set it. Each to its own endpoint, never a toggle, on both surfaces. A
+/// controller that can only release everything gets NO request from a lit
+/// button, and is pointed at Clear: widening the press into a clear would drop
+/// the EDL line a flash is relying on.
+#[test]
+fn a_lit_button_releases_its_own_mode_and_an_unlit_one_sets_it() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_with_board();
+    let per_mode = reading(&["BOOT_MD_EDL"], &[], "per_mode");
+    let all_only = reading(&["BOOT_MD_EDL"], &[], "all_only");
+    let probe = format!(
+        r##"(() => new Promise(async (done) => {{
+          {HELD_HELPERS}
+          const posts = [];
+          window.fetch = (url, init) => {{
+            posts.push({{url: String(url), method: (init || {{}}).method || "GET"}});
+            return Promise.resolve(new Response('{{"ok":true,"result":{{}}}}',
+              {{status: 200, headers: {{"content-type": "application/json"}}}}));
+          }};
+          openConsole(ap());
+          const press = async (scope, mode) => {{
+            for (const b of document.querySelectorAll("button.act")) b.disabled = false;
+            const n = posts.length;
+            document.querySelector(`${{scope}} button[data-mode="${{mode}}"]`).click();
+            await new Promise(f => setTimeout(f, 60));
+            return posts.slice(n).map(p => p.method + " " + decodeURIComponent(p.url));
+          }};
+          const out = {{}};
+          paint({per_mode});
+          for (const scope of [".ctl", "#power"]) {{
+            out[scope] = {{
+              lit: await press(scope, "BOOT_MD_EDL"),
+              unlit: await press(scope, "BOOT_UEFI"),
+              clear: await press(scope, "clear"),
+            }};
+            // The press locked the buttons and left the grid held; start clean.
+            await new Promise(f => setTimeout(f, 1700));
+            paint({per_mode});
+          }}
+          paint({all_only});
+          out.all_only = {{
+            rack: await press(".ctl", "BOOT_MD_EDL"),
+            bar: await press("#power", "BOOT_MD_EDL"),
+            rack_msg: document.querySelector(".ctl .ctl-msg").textContent,
+            bar_msg: document.getElementById("powermsg").textContent,
+          }};
+          done(JSON.stringify(out));
+        }}))()"##
+    );
+    let out = browser.eval_within(
+        &format!("{}/?nostream=1", rig.base),
+        Duration::from_millis(1500),
+        &probe,
+        Duration::from_secs(30),
+    );
+    let v: Value = serde_json::from_str(out.as_str().unwrap_or("null")).unwrap_or(Value::Null);
+
+    for scope in [".ctl", "#power"] {
+        let one = |k: &str| -> String {
+            let posts = v[scope][k]
+                .as_array()
+                .unwrap_or_else(|| panic!("{scope} {k}: {v}"));
+            assert_eq!(posts.len(), 1, "one press, one request ({scope} {k}): {v}");
+            posts[0].as_str().unwrap_or_default().to_string()
+        };
+        let lit = one("lit");
+        assert!(
+            lit.starts_with("POST /api/boot_mode/") && lit.ends_with("/BOOT_MD_EDL/release"),
+            "{scope}: a lit button releases ITS mode: {lit}"
+        );
+        let unlit = one("unlit");
+        assert!(
+            unlit.ends_with("/BOOT_UEFI") && !unlit.contains("release"),
+            "{scope}: an unlit button sets its mode: {unlit}"
+        );
+        assert!(one("clear").ends_with("/clear"), "{scope}: {v}");
+        for post in [&lit, &unlit] {
+            assert!(
+                post.contains("ClickBoard") || post.contains("CLICKCTRL"),
+                "{scope}: aimed at a real device of this board: {post}"
+            );
+            assert!(!post.contains("undefined"), "{post}");
+        }
+    }
+
+    for surface in ["rack", "bar"] {
+        assert_eq!(
+            v["all_only"][surface],
+            serde_json::json!([]),
+            "a controller that cannot release one mode gets NO request from a lit button, \
+             least of all a clear: {v}"
+        );
+        let msg = v["all_only"][format!("{surface}_msg")]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            msg.contains("Clear"),
+            "and the person is told what works: {v}"
+        );
+    }
+}
+
+/// Photograph the held-mode controls so a person can look at them: the rack's
+/// controller panel and a popped-out console, with EDL held and UEFI unknown.
+///
+/// Ignored by default: it asserts nothing, it produces pictures.
+///
+///     cargo test --test browser -- --ignored held_modes_screenshot
+///
+/// Writes `exports/held-rack.png` and `exports/held-popout.png`.
+#[test]
+#[ignore]
+fn held_modes_screenshot() {
+    let _serial = one_browser_at_a_time();
+    let Some(bin) = chromium() else {
+        eprintln!("SKIP: no chromium");
+        return;
+    };
+    let browser = cdp::Browser::launch(&bin).expect("chromium");
+    let rig = Rig::start_with_board();
+    let shown = reading(&["BOOT_MD_EDL"], &["BOOT_UEFI"], "per_mode");
+    let _ = std::fs::create_dir_all("/work/exports");
+    for (name, query, open) in [
+        ("held-rack.png", "?nostream=1".to_string(), false),
+        (
+            "held-popout.png",
+            format!("?nostream=1&console={}", CLICK_AP.replace('/', "%2F")),
+            true,
+        ),
+    ] {
+        let url = format!("{}/{query}", rig.base);
+        let probe = format!(
+            r##"(() => {{
+              {HELD_HELPERS}
+              if ({open}) openConsole(ap());
+              paint({shown});
+              return "ok";
+            }})()"##
+        );
+        browser.eval_after_load(&url, Duration::from_millis(1500), &probe);
+        let out = std::path::PathBuf::from("/work/exports").join(name);
+        assert!(
+            browser.screenshot(&url, Duration::from_millis(500), &out, false),
+            "no screenshot was written"
+        );
+        eprintln!("wrote {}", out.display());
+    }
 }

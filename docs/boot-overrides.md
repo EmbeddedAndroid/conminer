@@ -25,10 +25,21 @@ controller that did not answer has not said the next boot is a normal one.
 
 ## Seeing it
 
-**Web UI.** Every controller panel has a *Held across boots* row: one chip per
-held line (`MD_EDL held`), or `none held`, or `unknown`, with the age of the
-controller reading. It refreshes with the normal status sweep. Looking at it
-never changes a board: the sweep sends mcpd read-only questions and nothing else.
+**Web UI.** Wherever a board's boot modes are offered (the controller panel in
+the rack, and the bar under an open console, including a console popped out
+into its own window) there is a *Held across boots* row: one chip per held line
+(`MD_EDL held`), or `none held`, or `unknown`, with the age of the controller
+reading. It refreshes with the normal status sweep. Looking at it never changes
+a board: the sweep sends mcpd read-only questions and nothing else.
+
+The boot-mode buttons are lamps as well as controls. A button is **lit** (green,
+with a dot) while the controller reads that mode's line as held, and goes out
+when the line reads released. It is lit from the controller's reading and never
+from the click, so it follows the line whoever moved it: a press on the page, an
+agent's `boot_mode` over MCP, a `normal_boot`. A dashed button means the
+controller has not said (it did not answer, or has not been read yet); a dashed
+button is not an unlit one. A mode that holds nothing (a firmware sequence such
+as `SS_MD_FASTBOOT`) and a controller that cannot be read at all stay plain.
 
 **MCP.**
 
@@ -69,6 +80,10 @@ thing the age can delay is news of a change made outside conminer.
 one mistaken selection on a board that is deliberately held in another mode,
 EDL for a flash being the usual case.
 
+**Web UI:** press the lit button. A lit button releases its own mode; an unlit
+one sets it. Each is its own request, never a toggle, so a press made against a
+picture that has gone stale repeats something already true.
+
 **MCP,** holding the lease:
 
     boot_mode {"target": "2.4", "mode": "BOOT_UEFI", "release": true}
@@ -80,8 +95,9 @@ lease, one actuation at a time per board, `dry_run`. `release` with `clear` is
 refused.
 
 A controller whose profile has no `boot_mode_release` hook reports
-`"release": "all_only"`. There the call is refused with `HOOK_NOT_CONFIGURED`.
-It is never widened into a clear on its own.
+`"release": "all_only"`. There the call is refused with `HOOK_NOT_CONFIGURED`,
+and the page sends nothing and points at *Clear*. Neither is ever widened into
+a clear on its own.
 
 ## Booting normally
 
@@ -143,7 +159,7 @@ The read prints one line per override and must only ever query:
 `{device}` are substituted as for `power`.
 
 The `mode <MODE> asserts <LINE>` lines are optional and say which boot mode
-holds which line. They are what `modes` is built from, and
+holds which line. They are what `modes` and the lit buttons are built from, and
 they come from the hook because the hook is what turns a mode into a line when
 it sets one: a second copy of that table in a config file is a copy that can
 light the wrong button. Without them the lines are still reported and no mode

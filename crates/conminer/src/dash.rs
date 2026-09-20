@@ -1767,6 +1767,26 @@ async fn boot_mode(
     .await
 }
 
+/// `POST /api/boot_mode/:selector/:mode/release`: let go of the ONE override
+/// this mode holds.
+///
+/// Its own endpoint rather than a toggle on the one above. The page decides
+/// which to call from what it is SHOWING, so a press made against a picture
+/// that has gone stale repeats something already true; a server-side toggle
+/// would flip a line the person never saw.
+async fn boot_mode_release(
+    State(d): State<Dash>,
+    Path((selector, mode)): Path<(String, String)>,
+) -> Response {
+    hardware_action(
+        &d,
+        &selector,
+        "boot_mode",
+        json!({"device": selector, "mode": mode, "release": true}),
+    )
+    .await
+}
+
 /// `POST /api/normal_boot/:selector`: release the boot-mode overrides, prove it,
 /// then power cycle.
 ///
@@ -1869,6 +1889,10 @@ pub fn router(dash: Dash) -> Router {
         .route(
             "/api/boot_mode/:selector/:mode",
             axum::routing::post(boot_mode),
+        )
+        .route(
+            "/api/boot_mode/:selector/:mode/release",
+            axum::routing::post(boot_mode_release),
         )
         .route("/", get(index))
         .route("/healthz", get(healthz))
