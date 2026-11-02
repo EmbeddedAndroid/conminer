@@ -2201,6 +2201,7 @@ pub fn registry() -> &'static [Tool] {
             }),
             call: |ctx, a| {
                 let path = shared_path(s(a, "path")?);
+                conminer_core::credentials::guard_path(&ctx.config().credentials.file, &path)?;
                 let dev = match opt_s(a, "device") {
                     Some(sel) => ctx.device(sel)?,
                     None => {
@@ -3131,6 +3132,7 @@ pub fn registry() -> &'static [Tool] {
                 let d = device(ctx, a)?;
                 let session = i(a, "session")?;
                 let path = shared_path(s(a, "path")?);
+                conminer_core::credentials::guard_path(&ctx.config().credentials.file, &path)?;
                 let cap = (ctx.config().export.max_gb * 1024.0 * 1024.0 * 1024.0) as i64;
                 let payload = ctx.with_store(&d, |st| {
                     let meta = st.session(session)?;
@@ -3550,6 +3552,10 @@ pub fn registry() -> &'static [Tool] {
                 if let Some(t) = opt_i(a, "timeout_s") {
                     opts.timeout_s = t.max(1) as u64;
                 }
+                opts.login = conminer_core::credentials::Login::resolve(
+                    &ctx.config().credentials.file,
+                    &[d.display_name(), d.label().unwrap_or_default()],
+                );
 
                 let txn = block_on(async move {
                     let io = BrokeredTransport::connect(&endpoint, &broker_sock, &broker_dev).await?;
@@ -3562,11 +3568,16 @@ pub fn registry() -> &'static [Tool] {
                 let confirmed = txn.prompt_matched.clone();
                 let kind = prompt_kind_of(ctx, &d, confirmed.as_deref());
                 ctx.with_store(&d, |st| {
-                    st.append_event(None, None, now, "run_command", &json!({
+                    let mut ev = json!({
                         "command": txn.command,
                         "status": txn.status,
                         "duration_ms": txn.duration_ms,
-                    }))?;
+                    });
+                    // What a login sent, the password as its marker (§8.5).
+                    if let Some(l) = txn.detail.get("login") {
+                        ev["login"] = l.clone();
+                    }
+                    st.append_event(None, None, now, "run_command", &ev)?;
                     // §F7. ONE OWNER FOR PROMPT KNOWLEDGE. A successful command
                     // is proof this device sits at this prompt and takes input --
                     // the strongest evidence available, and it used to be thrown
@@ -5405,7 +5416,9 @@ pub fn registry() -> &'static [Tool] {
                     )
                     .with_hint("use strategy=base64, which works on any Unix userspace"));
                 }
-                let data = std::fs::read(s(a, "local_path")?)?;
+                let local = std::path::Path::new(s(a, "local_path")?);
+                conminer_core::credentials::guard_path(&ctx.config().credentials.file, local)?;
+                let data = std::fs::read(local)?;
                 let max = opt_i(a, "max_bytes").unwrap_or(1_048_576).max(1) as u64;
                 let plan = transfer::plan_push(&data, s(a, "remote_path")?, max)?;
 
@@ -5516,6 +5529,7 @@ pub fn registry() -> &'static [Tool] {
             call: |ctx, a| {
                 let d = ctx.device_or_only(opt_s(a, "device"))?;
                 let path = shared_path(s(a, "path")?);
+                conminer_core::credentials::guard_path(&ctx.config().credentials.file, &path)?;
                 let raw = std::fs::read(&path)?;
                 let body = conminer_core::codec::pstore_body(&raw);
                 let tmp = ctx.data_dir().join(".pstore-ingest.tmp");
@@ -6536,6 +6550,7 @@ pub fn registry() -> &'static [Tool] {
                         remote.rsplit('/').next().unwrap_or("pulled.bin")
                     }),
                 );
+                conminer_core::credentials::guard_path(&ctx.config().credentials.file, &local)?;
 
                 let endpoint = endpoint_for(ctx, &d)?;
                 let (broker_sock, broker_dev) = broker_read_path(ctx, &d);

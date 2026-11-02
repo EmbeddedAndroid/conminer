@@ -1903,9 +1903,24 @@ fn g8_the_login_hint_names_a_real_knob_and_not_a_missing_tool() {
         hint.contains("credentials.file"),
         "it must name the knob that actually exists: {hint:?}"
     );
-    // And that knob must really be the one in the config.
-    let cfg = Config::default();
-    let _ = &cfg.credentials.file;
+    // And the knob must DO something: a login configured through it is what
+    // run_command resolves for the console. Naming a field that nothing reads
+    // is how this hint used to promise a login that did not exist.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("credentials.toml");
+    std::fs::write(
+        &file,
+        "[devices.\"/dev/ttyFIXTURE\"]\nuser = \"root\"\npassword = \"pw\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut cfg = Config::default();
+    cfg.credentials.file = file.display().to_string();
+    match conminer_core::credentials::Login::resolve(&cfg.credentials.file, &["/dev/ttyFIXTURE"]) {
+        conminer_core::credentials::Login::Use(c) => assert_eq!(c.user, "root"),
+        other => panic!("credentials.file named by the hint was not used: {other:?}"),
+    }
 }
 
 /// G5(a): a boot's firmware chain does not respect epoch boundaries.

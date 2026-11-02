@@ -56,6 +56,14 @@ or call `boot_overrides`: a latching controller keeps a boot-mode line asserted
 until it is released, and `power cycle` releases nothing. *Normal boot* (or `normal_boot` over MCP) releases every line, proves
 it by readback, and only then cycles. See [boot-overrides.md](boot-overrides.md).
 
+## A console at a login prompt
+
+`run_command` at a login prompt returns `LOGIN_REQUIRED` until a login for that
+console is in the file named by `credentials.file`. The file must be mode 0600
+and owned by the user conminer runs as; it is read at each gate, so adding an
+entry needs no restart. Format, placement and what is refused:
+[credentials.md](credentials.md).
+
 ## Storage
 
 Stores grow with use. `stats` reports `db_bytes`, line and template counts, and

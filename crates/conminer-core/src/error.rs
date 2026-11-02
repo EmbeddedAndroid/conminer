@@ -168,8 +168,11 @@ impl ErrorCode {
             // the tool list for something that was never built costs more than
             // no hint at all.
             LoginRequired => {
-                "the console is at a login prompt: put credentials for it in the file named by \
-                 credentials.file in conminer.toml (a 0600 file, never the registry), then retry"
+                "the console is at a login prompt and no usable login is configured for it: \
+                 add an entry for this console to the file named by credentials.file in \
+                 conminer.toml (mode 0600, owned by the user conminer runs as; see \
+                 docs/credentials.md) and retry; run_command then logs in by itself. If \
+                 detail says the file was refused or the login rejected, fix that first"
             }
             EchoMismatch => "the line may be lossy; raise runner.char_delay_ms or set echo=off",
             Hung => "the recovery ladder was exhausted; consider recover=power",

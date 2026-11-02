@@ -15,6 +15,7 @@
 //! store in parallel.
 
 use crate::config::{LineConfig, RunnerConfig};
+use crate::credentials::{self, Credential, Login};
 use crate::error::{ErrorCode, Result, ToolError};
 use crate::framer::profile::PromptKind;
 use serde::{Deserialize, Serialize};
@@ -204,6 +205,18 @@ fn is_line_noise(line: &str) -> bool {
     total > 0 && bad * 3 >= total
 }
 
+/// Whether the credential gate a console sits at asks for a secret rather than
+/// a name: `Password:`, U-Boot's `Enter password`, a `passphrase` prompt.
+fn is_password_gate(tail: &str) -> bool {
+    tail.lines()
+        .rfind(|l| !l.trim().is_empty() && !is_async_kernel_line(l))
+        .map(|l| {
+            let l = l.to_ascii_lowercase();
+            l.contains("password") || l.contains("passphrase")
+        })
+        .unwrap_or(false)
+}
+
 /// A prompt the runner recognises, and whether it means "commandable".
 #[derive(Debug, Clone)]
 pub struct Prompt {
@@ -305,6 +318,8 @@ pub struct CommandOptions {
     pub max_output_bytes: usize,
     /// Send even at an unknown prompt. Explicit, never a default.
     pub force: bool,
+    /// What to do at a credential gate (`credentials.file`).
+    pub login: Login,
 }
 
 impl CommandOptions {
@@ -316,6 +331,7 @@ impl CommandOptions {
             echo: true,
             max_output_bytes: 64 * 1024,
             force: false,
+            login: Login::None,
         }
     }
 }
@@ -678,6 +694,9 @@ pub struct Runner<T: Transport> {
     /// branch condition, so the answer now travels with the error.
     bytes_read: usize,
     endpoint: String,
+    /// What a login at a credential gate sent, with the password as the
+    /// marker. Merged into the transaction's `detail.login`.
+    login_note: Option<Value>,
 }
 
 impl<T: Transport> Runner<T> {
@@ -697,6 +716,7 @@ impl<T: Transport> Runner<T> {
             buf: String::new(),
             bytes_read: 0,
             endpoint: String::new(),
+            login_note: None,
         }
     }
 
@@ -800,15 +820,33 @@ impl<T: Transport> Runner<T> {
         let tail = self.tail();
         match self.prompts.classify(&tail) {
             Some(p) if p.kind.is_commandable() => Ok(p.raw.clone()),
-            Some(p) if p.kind == PromptKind::CredentialGate => Err(Transaction::failed(
-                Outcome::LoginRequired,
-                "",
-                tail,
-                json!({
-                    "gate": p.raw,
-                    "why": "the board is up but not commandable without credentials",
-                }),
-            )),
+            Some(p) if p.kind == PromptKind::CredentialGate => {
+                let gate = p.raw.clone();
+                match self.opts.login.clone() {
+                    Login::Use(cred) => self.login(&cred).await,
+                    Login::Refused(why) => Err(Transaction::failed(
+                        Outcome::LoginRequired,
+                        "",
+                        tail,
+                        json!({
+                            "gate": gate,
+                            "why": "the board is up but not commandable without credentials, \
+                                    and the configured credentials file was refused",
+                            "credentials": {"refused": why},
+                        }),
+                    )),
+                    Login::None => Err(Transaction::failed(
+                        Outcome::LoginRequired,
+                        "",
+                        tail,
+                        json!({
+                            "gate": gate,
+                            "why": "the board is up but not commandable without credentials",
+                            "credentials": "no entry for this console in credentials.file",
+                        }),
+                    )),
+                }
+            }
             Some(p) => Err(Transaction::failed(
                 Outcome::UnknownPrompt,
                 "",
@@ -833,6 +871,126 @@ impl<T: Transport> Runner<T> {
                 json!({"why": "no prompt appeared after a newline probe"}),
             )),
         }
+    }
+
+    /// Traverse a credential gate with the configured login (§8.5).
+    ///
+    /// Each step answers the gate the console is sitting at NOW: a user gate
+    /// gets the user name (echo-verified, it is not secret), a password gate
+    /// gets the password (paced, never echo-verified: a sane console does not
+    /// echo it). A gate seen again after its answer means the console rejected
+    /// the login, which is reported rather than retried, so a wrong password
+    /// is never typed in a loop. The buffer is cleared before every answer so
+    /// a gate that already scrolled past cannot be answered twice.
+    #[allow(clippy::result_large_err)]
+    async fn login(&mut self, cred: &Credential) -> std::result::Result<String, Transaction> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(self.opts.timeout_s.max(1));
+        let mut sent: Vec<String> = Vec::new();
+        let (mut user_sent, mut password_sent) = (false, false);
+        let note = |sent: &[String], result: &str| json!({"user": cred.user, "sent": sent, "result": result});
+        loop {
+            let tail = self.tail();
+            match self.prompts.classify(&tail) {
+                Some(p) if p.kind.is_commandable() => {
+                    self.login_note = Some(note(&sent, "ok"));
+                    return Ok(p.raw.clone());
+                }
+                Some(p) if p.kind == PromptKind::CredentialGate => {
+                    let wants_password = is_password_gate(&tail);
+                    if (wants_password && password_sent) || (!wants_password && user_sent) {
+                        self.login_note = Some(note(&sent, "rejected"));
+                        return Err(Transaction::failed(
+                            Outcome::LoginRequired,
+                            "",
+                            tail,
+                            json!({
+                                "gate": p.raw,
+                                "why": "the console asked again after the configured \
+                                        credentials were sent: the login was rejected",
+                            }),
+                        ));
+                    }
+                    self.buf.clear();
+                    let ending = self.opts.line.tx_line_ending.clone();
+                    if wants_password {
+                        self.send_secret(cred.password.expose()).await?;
+                        password_sent = true;
+                        sent.push(credentials::MARKER.to_string());
+                    } else {
+                        self.send_command(&cred.user).await?;
+                        user_sent = true;
+                        sent.push(cred.user.clone());
+                    }
+                    self.io.write_all(ending.as_bytes()).await.map_err(|e| {
+                        Transaction::failed(
+                            Outcome::LoginRequired,
+                            "",
+                            String::new(),
+                            json!({"io": e.message}),
+                        )
+                    })?;
+                }
+                _ => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                self.login_note = Some(note(&sent, "no_prompt"));
+                return Err(Transaction::failed(
+                    Outcome::LoginRequired,
+                    "",
+                    self.tail(),
+                    json!({
+                        "why": "no shell prompt appeared after the configured credentials \
+                                were sent",
+                    }),
+                ));
+            }
+            let _ = self.soak(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Type a secret: paced like any command, never echo-verified, and never
+    /// quoted in a failure.
+    #[allow(clippy::result_large_err)]
+    async fn send_secret(&mut self, secret: &str) -> std::result::Result<(), Transaction> {
+        let delay = Duration::from_millis(self.opts.cfg.char_delay_ms);
+        for (i, ch) in secret.char_indices() {
+            let bytes = &secret.as_bytes()[i..i + ch.len_utf8()];
+            if let Err(e) = self.io.write_all(bytes).await {
+                return Err(Transaction::failed(
+                    Outcome::LoginRequired,
+                    "",
+                    String::new(),
+                    json!({"io": e.message}),
+                ));
+            }
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Every transaction leaves through here: the login record is attached
+    /// and the password, should a broken console have echoed it, is replaced
+    /// by the marker in every field.
+    fn seal(&self, mut t: Transaction) -> Transaction {
+        if let Some(n) = &self.login_note {
+            if let Value::Object(ref mut m) = t.detail {
+                m.insert("login".into(), n.clone());
+            }
+        }
+        if let Login::Use(cred) = &self.opts.login {
+            let s = &cred.password;
+            t.command = credentials::redact(&t.command, s);
+            t.output = credentials::redact(&t.output, s);
+            t.preamble = credentials::redact(&t.preamble, s);
+            t.prompt_matched = t.prompt_matched.map(|p| credentials::redact(&p, s));
+            for r in &mut t.rungs_attempted {
+                r.sent = credentials::redact(&r.sent, s);
+            }
+            credentials::redact_value(&mut t.detail, s);
+        }
+        t
     }
 
     /// Step 3: send character-at-a-time with per-character echo verification.
@@ -902,7 +1060,7 @@ impl<T: Transport> Runner<T> {
                 t.command = cmd.to_string();
                 t.duration_ms = started.elapsed().as_millis() as u64;
                 // Every failure carries how much was read and from where.
-                return Ok(t.with_io(self.bytes_read, &self.endpoint));
+                return Ok(self.seal(t.with_io(self.bytes_read, &self.endpoint)));
             }
         };
 
@@ -913,7 +1071,7 @@ impl<T: Transport> Runner<T> {
         if let Err(mut t) = self.send_command(cmd).await {
             t.duration_ms = started.elapsed().as_millis() as u64;
             t.preamble = preamble;
-            return Ok(t.with_io(self.bytes_read, &self.endpoint));
+            return Ok(self.seal(t.with_io(self.bytes_read, &self.endpoint)));
         }
         self.io
             .write_all(self.opts.line.tx_line_ending.clone().as_bytes())
@@ -937,11 +1095,11 @@ impl<T: Transport> Runner<T> {
             let mut t = self.recover(cmd).await?;
             t.duration_ms = started.elapsed().as_millis() as u64;
             t.preamble = preamble;
-            return Ok(t);
+            return Ok(self.seal(t));
         }
 
         let (output, capped) = self.take_output(cmd);
-        Ok(Transaction {
+        let t = Transaction {
             status: Outcome::Ok,
             command: cmd.to_string(),
             output,
@@ -951,7 +1109,8 @@ impl<T: Transport> Runner<T> {
             rungs_attempted: Vec::new(),
             preamble,
             detail: json!({}),
-        })
+        };
+        Ok(self.seal(t))
     }
 
     /// Trim the echoed command and the trailing prompt out of the captured text.

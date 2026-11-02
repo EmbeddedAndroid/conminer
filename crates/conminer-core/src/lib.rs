@@ -19,6 +19,7 @@ pub mod clock;
 pub mod codec;
 pub mod config;
 pub mod console;
+pub mod credentials;
 pub mod decode;
 pub mod discovery;
 pub mod drain;
