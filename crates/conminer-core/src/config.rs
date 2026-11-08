@@ -1761,6 +1761,11 @@ impl Config {
                 "CONMINER_SEARCH_FTS" => {
                     self.search.fts = matches!(v.as_str(), "1" | "true" | "on" | "yes")
                 }
+                // A node's choice, like retention below: the file is shared by
+                // the fleet and must not differ between nodes.
+                "CONMINER_RUNNER_ALLOW_RAW_SEND" if !v.is_empty() => {
+                    self.runner.allow_raw_send = matches!(v.as_str(), "1" | "true" | "on" | "yes")
+                }
                 // §H2. A rig arms its own retention here rather than in
                 // conminer.toml, which documents the COMPILED DEFAULTS -- and
                 // those stay off, because a host that has been capturing for a

@@ -191,6 +191,9 @@ services:
       # mcpd reaches the consoles too (run_command, send, follow's prompt
       # checks), so it needs the same sibling-container address as minerd.
       CONMINER_SER2NET_HOST: ser2net
+      # The node's own choice; conminer.toml is the same on every node. Unset
+      # leaves the file's value in force.
+      CONMINER_RUNNER_ALLOW_RAW_SEND: ${CONMINER_RUNNER_ALLOW_RAW_SEND:-}
       # §H2. THIS RIG'S retention policy, and it must live HERE rather than in
       # the `x-common` anchor: a service that declares its own `environment:`
       # REPLACES the anchor's outright -- YAML merge keys do not deep-merge a

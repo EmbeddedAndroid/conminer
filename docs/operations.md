@@ -28,13 +28,20 @@ different builds; the fingerprint is the thing to compare.
 Keep every node on the same build. A fleet where one node is behind produces
 answers that disagree for reasons that have nothing to do with the boards.
 
+`conminer.toml` is bind-mounted from the checkout, and the config rejects keys
+it does not know. A newer file under an older image stops every service at its
+next restart, so sync and `./cm up` in one pass, and do not leave a node with
+the new file and the old image.
+
 ## Files a node owns
 
 `cm sync` never overwrites these, and they must not be copied between nodes:
 
 - `.env`: the node name, the address peers should dial, and bind addresses.
   Overwriting it renames this host in every peer's table, and device rows key
-  on that name.
+  on that name. Node policy that must not live in the shared `conminer.toml`
+  goes here too: `CONMINER_RUNNER_ALLOW_RAW_SEND=true` enables the raw `send`
+  passthrough on this node only.
 - `instance.json`: this node's identity.
 - `/data`: the per-device stores.
 

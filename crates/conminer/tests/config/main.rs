@@ -293,7 +293,12 @@ fn env_overrides_beat_the_file() {
         ("CONMINER_MCPD_BIND".into(), "0.0.0.0".into()),
         ("CONMINER_DATA".into(), "/data".into()),
         ("CONMINER_SEARCH_FTS".into(), "false".into()),
+        ("CONMINER_RUNNER_ALLOW_RAW_SEND".into(), "true".into()),
     ]);
+    assert!(c.runner.allow_raw_send);
+    // Empty is how compose passes an unset variable: the file stays in force.
+    c.apply_env(&[("CONMINER_RUNNER_ALLOW_RAW_SEND".into(), "".into())]);
+    assert!(c.runner.allow_raw_send);
     assert_eq!(c.mcpd.port, 7000);
     assert_eq!(c.mcpd.bind, "0.0.0.0");
     assert_eq!(c.paths.data_dir.to_str().unwrap(), "/data");

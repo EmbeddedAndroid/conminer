@@ -96,7 +96,7 @@ echo_timeout_ms = 200       # per-character echo wait
 command_timeout_s = 30      # prompt-return deadline before the recovery ladder
 settle_quiet_ms = 500       # idle confirmation before send
 escape_set = ["C-c", "C-\\", "C-d"]   # ladder rungs 2-3, ordered (per-device)
-allow_raw_send = false      # §8.3 low-level `send` passthrough, default off
+allow_raw_send = false      # §8.3 low-level `send` passthrough, default off; a node sets CONMINER_RUNNER_ALLOW_RAW_SEND
 
 [state]
 hung_after_s = 30           # (per-device) silence during an incomplete boot

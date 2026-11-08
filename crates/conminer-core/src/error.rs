@@ -199,7 +199,10 @@ impl ErrorCode {
                 "power was NOT cycled. detail.step says whether the clear or its readback \
                  failed; read boot_overrides to see what the controller holds now"
             }
-            SendDisabled => "set runner.allow_raw_send=true to enable the passthrough",
+            SendDisabled => {
+                "set CONMINER_RUNNER_ALLOW_RAW_SEND=true in the node's .env (or \
+                 runner.allow_raw_send=true in conminer.toml) to enable the passthrough"
+            }
             HookNotConfigured => "define the hook in conminer.toml under [devices.<id>.hooks]",
             HookFailed => "inspect the hook's exit code and stderr in the attached detail",
             HookTimeout => "raise hooks.*_timeout_s, or fix the hook",
