@@ -288,13 +288,8 @@ mod tests {
             "#!/bin/sh\nprintf 'in %s\\n' \"$(date +%s%N)\" >> \"$1\"\nsleep 1\nprintf 'out %s\\n' \"$(date +%s%N)\" >> \"$1\"\n",
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         let log = dir.path().join("log");
-        let tmpl = format!("{} {}", script.display(), log.display());
+        let tmpl = format!("/bin/sh {} {}", script.display(), log.display());
 
         let one = super::run(
             &tmpl,
@@ -342,13 +337,8 @@ mod tests {
             "#!/bin/sh\nprintf 'x' >> \"$1.n\"\nsleep 1\nwc -c < \"$1.n\"\n",
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         let log = dir.path().join("p");
-        let tmpl = format!("{} {}", script.display(), log.display());
+        let tmpl = format!("/bin/sh {} {}", script.display(), log.display());
         let subs = [("controller", "/dev/ctlP")];
         let (a, b, c) = tokio::join!(
             super::probe(&tmpl, &subs, super::Duration::from_secs(20)),
@@ -382,13 +372,8 @@ mod tests {
         let script = dir.path().join("two.sh");
         // Slow enough that the second asker is queued while the first runs.
         std::fs::write(&script, "#!/bin/sh\nsleep 1\necho \"answer-to-$1\"\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let power = format!("{} power-state", script.display());
-        let straps = format!("{} boot-overrides", script.display());
+        let power = format!("/bin/sh {} power-state", script.display());
+        let straps = format!("/bin/sh {} boot-overrides", script.display());
         let subs = [("controller", "/dev/ctlTwoQuestions")];
         let (a, b) = tokio::join!(
             super::probe(&power, &subs, super::Duration::from_secs(20)),
@@ -422,13 +407,8 @@ mod tests {
             "#!/bin/sh\nprintf 'x' >> \"$1.n\"\nwc -c < \"$1.n\"\n",
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         let log = dir.path().join("q");
-        let tmpl = format!("{} {}", script.display(), log.display());
+        let tmpl = format!("/bin/sh {} {}", script.display(), log.display());
         let subs = [("controller", "/dev/ctlQ")];
         super::probe(&tmpl, &subs, super::Duration::from_secs(20))
             .await

@@ -104,15 +104,14 @@ impl Rig {
         std::fs::create_dir_all(&ctl).unwrap();
         let script = dir.path().join("fake-ctl.sh");
         std::fs::write(&script, FAKE).unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         // The hook inherits mcpd's environment; tests in this binary run on
         // threads, so the state directory travels in the COMMAND, not in a
         // process-wide variable two tests would fight over.
+        // Run through `sh`, never exec'd: another test thread forking while
+        // this one still had the script open for writing leaves the child
+        // holding a write fd, and exec then fails with ETXTBSY.
         let run = format!(
-            "/usr/bin/env FAKE_CTL_DIR={} {}",
+            "/usr/bin/env FAKE_CTL_DIR={} /bin/sh {}",
             ctl.display(),
             script.display()
         );
