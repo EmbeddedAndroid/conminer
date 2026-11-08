@@ -97,6 +97,10 @@ name = "framer-optee"
 path = "tests/framer_optee/main.rs"
 
 [[test]]
+name = "framer-android"
+path = "tests/framer_android/main.rs"
+
+[[test]]
 name = "framer-zephyr"
 path = "tests/framer_zephyr/main.rs"
 

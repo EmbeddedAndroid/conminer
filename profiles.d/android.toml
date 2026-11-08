@@ -55,5 +55,7 @@ kind = 'line'
 severity = 'crit'
 
 [[prompts]]
-pattern = '(^|\n)[\w:/]*\s*[#$] *$'
+# mksh prefixes the prompt with the last command's exit status when it failed:
+# `1|console:/ $` after a failed command, `console:/ $` otherwise.
+pattern = '(^|\n)(\d+\|)?[\w:/]*\s*[#$] *$'
 kind = 'shell'
