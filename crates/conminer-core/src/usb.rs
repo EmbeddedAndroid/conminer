@@ -212,6 +212,122 @@ fn present_from_sysfs() -> Vec<(u16, u16, Option<String>)> {
     Vec::new()
 }
 
+/// A device on the bus with the strings that identify it, read from sysfs
+/// without opening it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identified {
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub port_path: Option<String>,
+    pub serial: Option<String>,
+    pub product: Option<String>,
+    pub class: u8,
+}
+
+impl Identified {
+    /// A key that follows the device wherever it is plugged in.
+    ///
+    /// Port paths are not identity: a board moved to another hub port, or a host
+    /// whose controllers renumber across a reboot, gets new paths for the same
+    /// hardware (an MTP debug adapter was seen to move from 2-2.1 to 1-3.3).
+    /// The serial string does follow it. A QDL gadget often has no serial but
+    /// carries the chip serial in its product string, so that stands in. A
+    /// device with neither has no identity and is never learned.
+    pub fn identity(&self) -> Option<String> {
+        let id = self
+            .serial
+            .as_deref()
+            .or(self.product.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())?;
+        Some(format!(
+            "{:04x}:{:04x}:{id}",
+            self.vendor_id, self.product_id
+        ))
+    }
+
+    fn is_hub(&self) -> bool {
+        self.class == 0x09
+    }
+}
+
+/// Every device on the bus with its identity strings. Respects the test fixture
+/// like [`scan`]; fixture rows may carry `serial`, `product` and `class`.
+pub fn list_identified() -> Vec<Identified> {
+    if let Some(rows) = fixture_rows() {
+        return rows
+            .iter()
+            .map(|r| Identified {
+                vendor_id: r["vendor_id"].as_u64().unwrap_or(0) as u16,
+                product_id: r["product_id"].as_u64().unwrap_or(0) as u16,
+                port_path: r["port_path"].as_str().map(str::to_string),
+                serial: r["serial"].as_str().map(str::to_string),
+                product: r["product"].as_str().map(str::to_string),
+                class: r["class"].as_u64().unwrap_or(0) as u8,
+            })
+            .collect();
+    }
+    identified_from_sysfs()
+}
+
+#[cfg(target_os = "linux")]
+fn identified_from_sysfs() -> Vec<Identified> {
+    let Ok(list) = nusb::list_devices() else {
+        return Vec::new();
+    };
+    list.map(|d| Identified {
+        vendor_id: d.vendor_id(),
+        product_id: d.product_id(),
+        port_path: d
+            .sysfs_path()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
+        serial: d.serial_number().map(str::to_string),
+        product: d.product_string().map(str::to_string),
+        class: d.class(),
+    })
+    .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn identified_from_sysfs() -> Vec<Identified> {
+    Vec::new()
+}
+
+/// Devices in `after` that were not on the bus in `before`, hubs excluded.
+///
+/// Matched by identity where there is one and by `(vid, pid, port)` where there
+/// is not, so a device that merely re-enumerated in place does not count as new.
+pub fn appeared<'a>(before: &[Identified], after: &'a [Identified]) -> Vec<&'a Identified> {
+    let key = |d: &Identified| {
+        d.identity().unwrap_or_else(|| {
+            format!(
+                "{:04x}:{:04x}@{}",
+                d.vendor_id,
+                d.product_id,
+                d.port_path.as_deref().unwrap_or("")
+            )
+        })
+    };
+    let seen: std::collections::HashSet<String> = before.iter().map(key).collect();
+    after
+        .iter()
+        .filter(|d| !d.is_hub() && !seen.contains(&key(d)))
+        .collect()
+}
+
+/// The port paths where devices with any of these identities are right now.
+pub fn ports_of(devices: &[Identified], identities: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = devices
+        .iter()
+        .filter(|d| d.identity().is_some_and(|i| identities.contains(&i)))
+        .filter_map(|d| d.port_path.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Is a recovery/flash-mode gadget present on any of this board's own ports?
 ///
 /// The generic form of `in_edl_on_ports`: matches a SIGNATURE LIST rather than
@@ -515,9 +631,7 @@ pub fn scan() -> Vec<UsbDevice> {
 /// a test that wants "another board is in EDL, this one is not" writes exactly
 /// that, port paths included.
 pub fn fixture_scan() -> Option<Vec<UsbDevice>> {
-    let path = std::env::var_os("CONMINER_USB_FIXTURE")?;
-    let text = std::fs::read_to_string(&path).ok()?;
-    let rows: Vec<serde_json::Value> = serde_json::from_str(&text).ok()?;
+    let rows = fixture_rows()?;
     Some(
         rows.iter()
             .map(|r| UsbDevice {
@@ -534,6 +648,12 @@ pub fn fixture_scan() -> Option<Vec<UsbDevice>> {
             })
             .collect(),
     )
+}
+
+fn fixture_rows() -> Option<Vec<serde_json::Value>> {
+    let path = std::env::var_os("CONMINER_USB_FIXTURE")?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// Try to clear a zombie by resetting its port.
@@ -579,7 +699,72 @@ pub fn clear_zombie(_dev: &UsbDevice) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{recovery_present_in, GadgetSig};
+    fn ident(port: &str, serial: Option<&str>, product: Option<&str>, class: u8) -> Identified {
+        Identified {
+            vendor_id: 0x05c6,
+            product_id: 0x901d,
+            port_path: Some(port.into()),
+            serial: serial.map(str::to_string),
+            product: product.map(str::to_string),
+            class,
+        }
+    }
+
+    #[test]
+    fn identity_follows_the_serial_and_falls_back_to_the_product_string() {
+        assert_eq!(
+            ident("1-3.2", Some("c0ffee01"), Some("Test-MTP"), 0)
+                .identity()
+                .as_deref(),
+            Some("05c6:901d:c0ffee01")
+        );
+        let edl = Identified {
+            product_id: 0x9008,
+            ..ident("1-3.2", None, Some("QUSB_BULK_CID:046F_SN:1416D9C2"), 0)
+        };
+        assert_eq!(
+            edl.identity().as_deref(),
+            Some("05c6:9008:QUSB_BULK_CID:046F_SN:1416D9C2")
+        );
+        assert_eq!(ident("1-3.2", None, None, 0).identity(), None);
+        assert_eq!(ident("1-3.2", Some("  "), None, 0).identity(), None);
+    }
+
+    #[test]
+    fn appeared_ignores_hubs_and_devices_that_only_re_enumerated() {
+        let before = vec![
+            ident("1-3.1", Some("ftdi"), None, 0),
+            ident("1-3", None, None, 9),
+        ];
+        let after = vec![
+            // the same adapter on a new port is not new
+            ident("2-1.1", Some("ftdi"), None, 0),
+            ident("1-3", None, None, 9),
+            ident("1-4", None, Some("USB2.0 Hub"), 9),
+            ident("1-3.2", Some("c0ffee01"), None, 0),
+        ];
+        let new: Vec<_> = appeared(&before, &after)
+            .into_iter()
+            .map(|d| d.port_path.clone().unwrap())
+            .collect();
+        assert_eq!(new, vec!["1-3.2".to_string()]);
+    }
+
+    #[test]
+    fn ports_of_resolves_identities_to_wherever_the_device_is_now() {
+        let bus = vec![
+            ident("2-1.4", Some("c0ffee01"), None, 0),
+            ident("1-3.1", Some("other"), None, 0),
+        ];
+        assert_eq!(
+            ports_of(&bus, &["05c6:901d:c0ffee01".to_string()]),
+            vec!["2-1.4".to_string()]
+        );
+        assert!(ports_of(&bus, &["05c6:901d:gone".to_string()]).is_empty());
+        assert!(ports_of(&bus, &[]).is_empty());
+    }
+
+    use super::{appeared, ports_of, recovery_present_in, GadgetSig, Identified};
 
     #[test]
     fn a_gadget_signature_parses_exact_and_wildcard_forms() {

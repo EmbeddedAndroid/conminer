@@ -312,6 +312,16 @@ impl Context {
             .cloned()
     }
 
+    /// Is any console outside `ids` in the middle of an actuation?
+    pub fn other_actuation_in_flight(&self, ids: &[i64]) -> bool {
+        self.inner
+            .actuations
+            .lock()
+            .expect("actuations")
+            .keys()
+            .any(|k| !ids.contains(k))
+    }
+
     /// What is actuating on this console right now, if anything.
     pub fn actuation_in_flight(&self, id: i64) -> Option<InFlight> {
         self.inner

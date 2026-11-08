@@ -1028,22 +1028,30 @@ fn actuation_scope(ctx: &Context, a: &Map<String, Value>) -> Result<ActuationSco
     })
 }
 
-/// The USB ports attributed to this board, from config or from the `usb_ports`
-/// tag the selftest writes after an EDL entry it drove itself.
+/// The USB ports attributed to this board right now.
+///
+/// Config entries always count. Beyond them, a board whose USB devices conminer
+/// has learned (`usb_identity`, see [`spawn_usb_learner`]) is resolved by
+/// identity on every call, so a re-plugged cable or a renumbered host follows
+/// the hardware instead of leaving a stale port behind. Only when none of those
+/// devices is on the bus does the last-seen `usb_ports` tag stand in, which is
+/// also where the selftest's own EDL observation lands.
 pub(crate) fn declared_usb_ports(ctx: &Context, d: &DeviceRow) -> Vec<String> {
     let mut ports = ctx.config().usb_ports_for(&[
         d.canonical.as_str(),
         d.display_name(),
         d.label().unwrap_or_default(),
     ]);
-    if let Some(tagged) = d.tags.get("usb_ports") {
-        ports.extend(
-            tagged
-                .split(',')
-                .map(str::trim)
-                .filter(|p| !p.is_empty())
-                .map(str::to_string),
-        );
+    let identities = tag_list(d, "usb_identity");
+    let resolved = if identities.is_empty() {
+        Vec::new()
+    } else {
+        conminer_core::usb::ports_of(&conminer_core::usb::list_identified(), &identities)
+    };
+    if resolved.is_empty() {
+        ports.extend(tag_list(d, "usb_ports"));
+    } else {
+        ports.extend(resolved);
     }
     ports.sort();
     ports.dedup();
@@ -1060,6 +1068,116 @@ fn fastboot_hold_ms(ctx: &Context, d: &DeviceRow) -> String {
         .to_string()
 }
 
+fn tag_list(d: &DeviceRow, key: &str) -> Vec<String> {
+    d.tags
+        .get(key)
+        .map(|t| {
+            t.split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// How long after a power-on or mode entry a board's USB devices may take to
+/// enumerate. An MTP's Android gadget arrives about 45 s after power.
+const USB_LEARN_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Learn which USB devices belong to the board that was just actuated.
+///
+/// `before` is the bus as it was before the press. Devices that appear in the
+/// window afterwards, are not part of the board's own console adapter, and are
+/// not already another board's, are recorded on every console of the board:
+/// their identities in `usb_identity` and their current ports in `usb_ports`.
+/// The attribution is causal, the same rule the selftest uses for its EDL
+/// gadget, so it is abandoned the moment any other board on this node starts
+/// actuating: two boards powering up together cannot be told apart.
+pub(crate) fn spawn_usb_learner(
+    ctx: &Context,
+    consoles: &[DeviceRow],
+    watched: &[DeviceRow],
+    before: Vec<conminer_core::usb::Identified>,
+) {
+    let ctx = ctx.clone();
+    let consoles = consoles.to_vec();
+    let own = console_usb_ports(watched);
+    let _ = std::thread::Builder::new()
+        .name("usb-learner".into())
+        .spawn(move || {
+            let ids: Vec<i64> = consoles.iter().map(|c| c.id).collect();
+            let deadline = std::time::Instant::now() + USB_LEARN_WINDOW;
+            let mut learned: Vec<String> = Vec::new();
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if ctx.other_actuation_in_flight(&ids) {
+                    return;
+                }
+                let now = conminer_core::usb::list_identified();
+                let others = identities_of_other_boards(&ctx, &ids);
+                let fresh: Vec<String> = conminer_core::usb::appeared(&before, &now)
+                    .into_iter()
+                    .filter(|d| d.port_path.as_ref().is_some_and(|p| !own.contains(p)))
+                    .filter_map(|d| d.identity())
+                    .filter(|i| !others.contains(i) && !learned.contains(i))
+                    .collect();
+                if fresh.is_empty() {
+                    continue;
+                }
+                learned.extend(fresh);
+                record_usb_identity(&ctx, &consoles, &learned, &now);
+            }
+        });
+}
+
+fn identities_of_other_boards(ctx: &Context, mine: &[i64]) -> Vec<String> {
+    ctx.registry()
+        .all_devices()
+        .unwrap_or_default()
+        .iter()
+        .filter(|d| !mine.contains(&d.id))
+        .flat_map(|d| tag_list(d, "usb_identity"))
+        .collect()
+}
+
+/// Keep at most this many identities per board: a board shows a handful of
+/// gadgets (EDL, fastboot, its OS composite), and the cap stops a misattributed
+/// device from lingering forever.
+const USB_IDENTITY_CAP: usize = 8;
+
+fn record_usb_identity(
+    ctx: &Context,
+    consoles: &[DeviceRow],
+    learned: &[String],
+    bus: &[conminer_core::usb::Identified],
+) {
+    let mut reg = ctx.registry();
+    for c in consoles {
+        let current = reg
+            .all_devices()
+            .ok()
+            .and_then(|all| all.into_iter().find(|d| d.id == c.id))
+            .map(|d| tag_list(&d, "usb_identity"))
+            .unwrap_or_default();
+        let mut ids: Vec<String> = current
+            .into_iter()
+            .filter(|i| !learned.contains(i))
+            .chain(learned.iter().cloned())
+            .collect();
+        if ids.len() > USB_IDENTITY_CAP {
+            ids.drain(..ids.len() - USB_IDENTITY_CAP);
+        }
+        let ports = conminer_core::usb::ports_of(bus, &ids);
+        let mut tags = std::collections::BTreeMap::new();
+        tags.insert("usb_identity".to_string(), ids.join(","));
+        if !ports.is_empty() {
+            tags.insert("usb_ports".to_string(), ports.join(","));
+        }
+        let _ = reg.set_tags(c.id, &tags);
+    }
+}
+
 /// Is any of this board's own USB ports on the bus right now?
 ///
 /// A SYSFS PATH TEST, not a device open. `usb::scan()` opens every device on the
@@ -1073,6 +1191,56 @@ fn board_ports_present(ports: &[String]) -> bool {
 
 fn ports_present_under(root: &std::path::Path, ports: &[String]) -> bool {
     ports.iter().any(|p| root.join(p).exists())
+}
+
+/// The USB ports the board's own consoles hang off: the debug adapter and every
+/// hub above it.
+///
+/// None of them leaves the bus when the board loses power. Measured on an
+/// MTP: its Alpaca controller sits on 2-2.1 beside the board's 2-2.2,
+/// and with both declared, "off" could never be verified because one of the
+/// ports was always present.
+fn console_usb_ports(watched: &[DeviceRow]) -> Vec<String> {
+    console_usb_ports_under(
+        std::path::Path::new("/sys"),
+        watched.iter().filter_map(|d| d.tty.as_deref()),
+    )
+}
+
+fn console_usb_ports_under<'a>(
+    sys: &std::path::Path,
+    ttys: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let is_port = |c: &str| {
+        c.starts_with(|ch: char| ch.is_ascii_digit())
+            && c.contains('-')
+            && c.chars()
+                .all(|ch| ch.is_ascii_digit() || ch == '-' || ch == '.')
+    };
+    let mut out = Vec::new();
+    for tty in ttys {
+        let name = std::path::Path::new(tty)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(tty);
+        let Ok(dev) = sys
+            .join("class/tty")
+            .join(name)
+            .join("device")
+            .canonicalize()
+        else {
+            continue;
+        };
+        out.extend(
+            dev.components()
+                .filter_map(|c| c.as_os_str().to_str())
+                .filter(|c| is_port(c))
+                .map(str::to_string),
+        );
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Can an "off" be confirmed at all, and by what?
@@ -4357,7 +4525,8 @@ pub fn registry() -> &'static [Tool] {
                 // Latched straps persist across boots, so a wrong mode is a trap
                 // that outlives the call that set it.
                 // A line mode switches something on a running board (the MTP's
-                // VBUS feeds): no boot happens, so no epoch opens.
+                // VBUS feeds): no boot happens, so no epoch opens and nothing
+                // new enumerates to learn from.
                 let line_mode = !clearing
                     && ctx
                         .config()
@@ -4396,6 +4565,8 @@ pub fn registry() -> &'static [Tool] {
                 // the same hardware race.
                 let _in_flight = ctx.begin_actuation("boot_mode", &action, &scope.consoles)?;
                 let marks = stream_marks(ctx, &scope);
+                let usb_before =
+                    (!releasing && !line_mode).then(conminer_core::usb::list_identified);
                 let result = block_on(hooks::run(&hook.template, &args, timeout))?;
                 if line_mode {
                     return Ok(json!({
@@ -4407,6 +4578,9 @@ pub fn registry() -> &'static [Tool] {
                                  opened. The opposite mode switches it back, and any power-on or \
                                  boot mode restores the board's normal levels.",
                     }));
+                }
+                if let Some(before) = usb_before {
+                    spawn_usb_learner(ctx, &scope.consoles, &scope.watched, before);
                 }
 
                 let label = opt_s(a, "label").map(str::to_string)
@@ -7995,6 +8169,7 @@ fn run_power(
         None
     };
     let marks = stream_marks(ctx, scope);
+    let usb_before = (action.as_str() != "off").then(conminer_core::usb::list_identified);
     let result = block_on(hooks::run(&hook.template, &args, timeout))?;
 
     // ---- verify the ACTION, not the exit code ----------------
@@ -8023,6 +8198,12 @@ fn run_power(
         timeout,
         poked,
     );
+
+    if let Some(before) = usb_before {
+        if verified.get("verified").and_then(Value::as_bool) == Some(true) {
+            spawn_usb_learner(ctx, &scope.consoles, &scope.watched, before);
+        }
+    }
 
     let event = json!({"action": action, "hook": result, "effect": verified});
     let opened = open_actuation_epochs(ctx, scope, "power", label, "power", &event, &marks)?;
@@ -8528,7 +8709,9 @@ fn verify_power_effect(
     // it costs a directory lookup, and it works on a controller with no power
     // sense at all -- where console silence proves nothing and a operator was
     // made to wait 80 seconds to be told so.
-    let ports = declared_usb_ports(ctx, d);
+    let mut ports = declared_usb_ports(ctx, d);
+    let own = console_usb_ports(watched);
+    ports.retain(|p| !own.contains(p));
     let port_before = board_ports_present(&ports);
 
     // Was the console SAYING anything before we acted?
@@ -9546,7 +9729,7 @@ mod probe_bytes_tests {
 
 #[cfg(test)]
 mod off_verification_tests {
-    use super::{off_evidence, ports_present_under, OffEvidence};
+    use super::{console_usb_ports_under, off_evidence, ports_present_under, OffEvidence};
 
     /// EIGHTY SECONDS TO SAY "I CANNOT TELL" IS THE BUG.
     ///
@@ -9592,6 +9775,22 @@ mod off_verification_tests {
             &["3-1.2".to_string(), "2-2.4".to_string()]
         ));
         assert!(!ports_present_under(root, &[]));
+    }
+
+    /// The console adapter's port and the hubs above it never leave the bus,
+    /// so they must not count as the board's presence; a sibling port must.
+    #[test]
+    fn console_adapter_ports_are_not_board_presence() {
+        let dir = tempfile::tempdir().unwrap();
+        let sys = dir.path();
+        let port = sys.join("devices/pci0000:00/0000:00:14.0/usb2/2-2/2-2.1/2-2.1:1.0/ttyUSB0");
+        std::fs::create_dir_all(&port).unwrap();
+        std::fs::create_dir_all(sys.join("class/tty/ttyUSB0")).unwrap();
+        std::os::unix::fs::symlink(&port, sys.join("class/tty/ttyUSB0/device")).unwrap();
+        let own = console_usb_ports_under(sys, ["/dev/ttyUSB0", "ttyUSB9"].into_iter());
+        assert_eq!(own, vec!["2-2".to_string(), "2-2.1".to_string()]);
+        assert!(!own.contains(&"2-2.2".to_string()));
+        assert!(console_usb_ports_under(sys, std::iter::empty()).is_empty());
     }
 }
 

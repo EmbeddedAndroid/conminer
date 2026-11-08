@@ -101,6 +101,10 @@ name = "framer-android"
 path = "tests/framer_android/main.rs"
 
 [[test]]
+name = "usb-identity"
+path = "tests/usb_identity/main.rs"
+
+[[test]]
 name = "line-modes"
 path = "tests/line_modes/main.rs"
 
