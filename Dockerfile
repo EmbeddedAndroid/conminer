@@ -139,6 +139,9 @@ COPY --from=builder /out/conminer /usr/local/bin/conminer
 # directly.
 COPY tools/bantam-power /usr/local/bin/
 RUN chmod +x /usr/local/bin/bantam-power
+# Flash hooks, and the manifests they verify a node's qdl runtime and loaders
+# against. Board files naming them live in site.d (docs/flash-hooks.md).
+COPY hooks /usr/local/libexec/conminer/hooks
 COPY profiles.d /etc/conminer/profiles.d
 COPY conminer.toml /etc/conminer/conminer.toml
 

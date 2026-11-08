@@ -242,6 +242,7 @@ services:
       - ./site.d:/etc/conminer/site.d:ro
       - ./selftest.toml:/etc/conminer/selftest.toml:ro
       - ./tools/bantam-power:/usr/local/bin/bantam-power:ro
+      - ./hooks:/usr/local/libexec/conminer/hooks:ro
       # Exports and ingest land here, so a session archive written by a tool call
       # is retrievable from the host without `docker cp`. A bare filename passed
       # to export_session/ingest_file resolves into this directory.

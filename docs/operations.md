@@ -64,7 +64,10 @@ checks the layered result.
     file = "/var/lib/conminer/credentials.toml"
 
     [devices."/dev/serial/by-id/usb-FTDI_Example-if00-port0".hooks]
-    flash = "/bin/sh /exports/example/flash.sh {image}"
+    flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/example.board {image}"
+
+A flash hook's board file lives beside the site files, in `site.d/flash/`
+(docs/flash-hooks.md).
 
 Compose mounts the directory at `/etc/conminer/site.d` (`CONMINER_SITE_DIR`
 names another one). Only its README is tracked, a deploy never overwrites it,

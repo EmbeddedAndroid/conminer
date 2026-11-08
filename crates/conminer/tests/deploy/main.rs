@@ -918,3 +918,68 @@ fn the_ser2net_lock_directory_is_a_tmpfs() {
          process that wrote it:\n{svc}"
     );
 }
+
+/// Flash hooks run in mcpd. The image carries them and compose mounts the same
+/// tree over it, at the path site.d board wiring names.
+#[test]
+fn the_flash_hooks_ship_in_the_image_and_reach_mcpd() {
+    assert!(
+        dockerfile().contains("COPY hooks /usr/local/libexec/conminer/hooks"),
+        "the runtime image must ship hooks/"
+    );
+    let c = compose();
+    let mcpd = c
+        .split_once("container_name: conminer-mcpd")
+        .expect("mcpd service")
+        .1;
+    let mcpd = mcpd.split("container_name:").next().unwrap_or(mcpd);
+    assert!(
+        mcpd.contains("- ./hooks:/usr/local/libexec/conminer/hooks:ro"),
+        "mcpd, where hooks execute, must see the deployed hooks"
+    );
+}
+
+/// A node carrying an older hook or manifest must not report the current build,
+/// and a hook deleted upstream must not survive a sync.
+#[test]
+fn the_fingerprint_covers_the_flash_hooks() {
+    let node = tempfile::tempdir().unwrap();
+    let sync = || {
+        let o = std::process::Command::new("bash")
+            .args(["cm", "sync", "--local"])
+            .arg(node.path())
+            .current_dir(repo_root())
+            .output()
+            .expect("cm sync runs");
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    };
+    let id_of = |dir: &std::path::Path| {
+        let o = std::process::Command::new("bash")
+            .args(["cm", "build-id"])
+            .current_dir(dir)
+            .output()
+            .expect("cm build-id runs");
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    sync();
+    let current = id_of(node.path());
+    assert_eq!(current, id_of(&repo_root()));
+
+    let hook = node.path().join("hooks/qdl-flash");
+    let mut text = std::fs::read_to_string(&hook).unwrap();
+    text.push_str("# drifted\n");
+    std::fs::write(&hook, text).unwrap();
+    assert_ne!(
+        id_of(node.path()),
+        current,
+        "a changed hook is a different build"
+    );
+
+    std::fs::write(node.path().join("hooks/manifests/old.sha256"), "x").unwrap();
+    sync();
+    assert!(
+        !node.path().join("hooks/manifests/old.sha256").exists(),
+        "a manifest deleted upstream must not survive a sync"
+    );
+    assert_eq!(id_of(node.path()), current);
+}

@@ -39,12 +39,13 @@ shift || true
 build_id() {
   # Everything that ends up in the binary or the config it ships with.
   #
-  # `tools` is here because the image COPYs hook scripts out of it. They run on
+  # `tools` and `hooks` are here because the image COPYs hook scripts out of
+  # them. They run on
   # the node as part of the service, so a node carrying an older script under an
   # unchanged fingerprint would report itself current while lacking whatever the
   # newer script does: measured risk, not a hypothetical, the moment a hook gains
   # an action the Rust side calls.
-  find crates profiles.d tools Cargo.toml Cargo.lock Dockerfile conminer.toml selftest.toml \
+  find crates profiles.d tools hooks Cargo.toml Cargo.lock Dockerfile conminer.toml selftest.toml \
        -type f 2>/dev/null \
     | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-12
 }
@@ -64,7 +65,7 @@ node_owned() { printf '%s\n' .env instance.json site.d target-side target-docker
 # stale one left behind changes the fingerprint while the source that produced it
 # is gone, and the node then reports a build nobody can reproduce.
 fingerprint_inputs() {
-  printf '%s\n' crates profiles.d tools Cargo.toml Cargo.lock Dockerfile conminer.toml selftest.toml
+  printf '%s\n' crates profiles.d tools hooks Cargo.toml Cargo.lock Dockerfile conminer.toml selftest.toml
 }
 
 sync_source() {
