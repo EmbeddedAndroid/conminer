@@ -241,6 +241,10 @@ name = "deploy"
 path = "tests/deploy/main.rs"
 
 [[test]]
+name = "flash-hooks"
+path = "tests/flash_hooks/main.rs"
+
+[[test]]
 name = "surface"
 path = "tests/surface/main.rs"
 

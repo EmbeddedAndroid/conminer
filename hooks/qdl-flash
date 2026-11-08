@@ -1,0 +1,506 @@
+#!/usr/bin/env bash
+# conminer flash hook for Qualcomm boards in EDL (Sahara + Firehose via qdl).
+#
+#   qdl-flash --board <board-file> [--dry-run] [--device <path>] <image-ref>
+#   qdl-flash --board <board-file> --check
+#
+# One script for every board; what differs between boards (storage, LUN and
+# partition map, programmer, reset policy, accepted image references) lives in
+# the board file, which belongs to the node (site.d). docs/flash-hooks.md
+# describes the board file and every mode.
+#
+# <image-ref> names a directory under the board's stage, staged beforehand.
+# The board file's `ref` lines decide which references are accepted and what
+# mode each one runs in:
+#
+#   kind           flash-kind.txt names a kind (default: the first `kind`
+#                  line); SHA256SUMS.flash lists exactly that kind's payloads,
+#                  in order; each payload is written to every target the kind
+#                  maps it to, in one qdl session
+#   xml            rawprogram*.xml and patch*.xml with the files they name
+#   parts          partitions.txt: one "<lun>/<label> <file>" write per line
+#   xml-or-parts   xml when the directory has rawprogram XML, else parts
+#   read           partitions.txt: one "<lun>/<label>|<lun>/<start>+<count>
+#                  <file>" read per line; SHA256SUMS.read is written over the
+#                  results; nothing is written to the board
+#   window-write   part.txt names one `window`; the payload is padded to whole
+#                  sectors, written, read back and compared in one session
+#   window-read    part.txt names one `window`; it is read into <window>.bin
+#   fastboot-boot  boot.img booted once with `fastboot boot`; nothing written
+#   digest         the reference is v1:<target>:<sha256>:<file>; <file> in the
+#                  board's digest_dir is snapshotted, written to the `digest`
+#                  target and verified by an on-device sha256 readback
+#
+# Every staged directory except a digest one carries SHA256SUMS covering what
+# is written, and nothing runs unless it verifies. The qdl runtime, the
+# fastboot runtime and the firehose loaders are verified against manifests
+# checked in beside this script (manifests/), so a stage cannot drift from
+# what the fleet agreed on.
+#
+# The lease and the boot-mode transitions belong to the conminer caller: put
+# the board in EDL (or FASTBOOT) first. This only talks to the device whose
+# serial is in the board's serial file.
+set -euo pipefail
+
+hook_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+me="qdl-flash"
+
+die() { echo "$me: $*" >&2; exit 2; }
+
+board_file=
+dry=0
+check=0
+device=
+ref=
+while (($#)); do
+	case "$1" in
+	--board) board_file=${2:-}; shift 2 || die "--board needs a file" ;;
+	--dry-run) dry=1; shift ;;
+	--check) check=1; shift ;;
+	--device) device=${2:-}; shift 2 || die "--device needs a path" ;;
+	-*) die "unknown option $1" ;;
+	*) [[ -z "$ref" ]] || die "one image reference only"; ref=$1; shift ;;
+	esac
+done
+[[ -n "$board_file" && -f "$board_file" ]] || die "no board file: ${board_file:-(none)}"
+
+# ------------------------------------------------------------ board file ----
+declare -A opt=([reset]=yes [debug]=no [timeout_s]=540 [sector_bytes]=4096
+	[edl_serial_file]=edl-serial [fastboot_timeout_s]=300)
+declare -A runtime_dirs=() runtime_manifests=()
+ref_modes=() ref_res=() ref_flags=()
+kind_names=() kind_files=() kind_targets=()
+declare -A max_bytes=() window_addr=() window_access=()
+declare -A digest_write=() digest_readback=() digest_rule=() digest_bytes=()
+programmers=()
+
+lineno=0
+bad() { die "$board_file:$lineno: $*"; }
+while IFS= read -r line || [[ -n "$line" ]]; do
+	lineno=$((lineno + 1))
+	line=${line%%#*}
+	read -r -a w <<< "$line" || true
+	((${#w[@]})) || continue
+	key=${w[0]}
+	case "$key" in
+	stage | storage | edl_serial_file | fastboot_serial_file | reset | debug | \
+		timeout_s | fastboot_timeout_s | sector_bytes | console | nor_payload | digest_dir)
+		((${#w[@]} == 2)) || bad "$key takes one value"
+		opt[$key]=${w[1]}
+		;;
+	runtime | fastboot_runtime | firehose)
+		((${#w[@]} == 3)) || bad "$key takes <dir> <manifest>"
+		runtime_dirs[$key]=${w[1]}
+		runtime_manifests[$key]=${w[2]}
+		;;
+	programmer)
+		((${#w[@]} >= 2)) || bad "programmer takes at least one name"
+		programmers+=("${w[@]:1}")
+		;;
+	ref)
+		((${#w[@]} == 3 || ${#w[@]} == 4)) || bad "ref takes <mode> <regex> [own-programmer|firehose-programmer]"
+		case "${w[1]}" in
+		kind | xml | parts | xml-or-parts | read | window-write | window-read | fastboot-boot | digest) ;;
+		*) bad "unknown mode ${w[1]}" ;;
+		esac
+		[[ ${#w[@]} == 3 || ${w[3]} == own-programmer || ${w[3]} == firehose-programmer ]] ||
+			bad "unknown ref flag ${w[3]}"
+		ref_modes+=("${w[1]}")
+		ref_res+=("${w[2]}")
+		ref_flags+=("${w[3]:-}")
+		;;
+	kind)
+		((${#w[@]} >= 4)) || bad "kind takes <name> <file> <target>..."
+		kind_names+=("${w[1]}")
+		kind_files+=("${w[2]}")
+		kind_targets+=("${w[*]:3}")
+		;;
+	max_bytes)
+		((${#w[@]} == 3)) && [[ ${w[2]} =~ ^[0-9]+$ ]] || bad "max_bytes takes <file> <bytes>"
+		max_bytes[${w[1]}]=${w[2]}
+		;;
+	window)
+		((${#w[@]} == 4)) || bad "window takes <name> <lun>/<start>+<count> <r|rw>"
+		[[ ${w[2]} =~ ^[0-9]+/[0-9]+\+[0-9]+$ ]] || bad "window address ${w[2]}"
+		[[ ${w[3]} == r || ${w[3]} == rw ]] || bad "window access ${w[3]}"
+		window_addr[${w[1]}]=${w[2]}
+		window_access[${w[1]}]=${w[3]}
+		;;
+	digest)
+		((${#w[@]} == 6)) || bad "digest takes <target> <write-addr> <whole|lun/start> <exact|max> <bytes>"
+		[[ ${w[3]} == whole || ${w[3]} =~ ^[0-9]+/[0-9]+$ ]] || bad "digest readback ${w[3]}"
+		[[ ${w[4]} == exact || ${w[4]} == max ]] || bad "digest rule ${w[4]}"
+		[[ ${w[5]} =~ ^[0-9]+$ ]] || bad "digest bytes ${w[5]}"
+		digest_write[${w[1]}]=${w[2]}
+		digest_readback[${w[1]}]=${w[3]}
+		digest_rule[${w[1]}]=${w[4]}
+		digest_bytes[${w[1]}]=${w[5]}
+		;;
+	*) bad "unknown key $key" ;;
+	esac
+done < "$board_file"
+
+for k in stage storage; do
+	[[ -n "${opt[$k]:-}" ]] || die "$board_file: $k is required"
+done
+[[ -n "${runtime_dirs[runtime]:-}" ]] || die "$board_file: runtime is required"
+((${#ref_modes[@]})) || die "$board_file: no ref lines, so no image is accepted"
+[[ ${opt[reset]} == yes || ${opt[reset]} == no ]] || die "$board_file: reset is yes or no"
+[[ ${opt[debug]} == yes || ${opt[debug]} == no ]] || die "$board_file: debug is yes or no"
+[[ ${opt[timeout_s]} =~ ^[0-9]+$ && ${opt[sector_bytes]} =~ ^[0-9]+$ ]] ||
+	die "$board_file: timeout_s and sector_bytes are numbers"
+for i in "${!kind_targets[@]}"; do
+	for t in ${kind_targets[$i]}; do
+		[[ $t =~ ^[0-9]+/[A-Za-z0-9_]+$ ]] || die "$board_file: kind ${kind_names[$i]} target $t"
+	done
+done
+
+stage=${opt[stage]}
+[[ $stage == /* ]] || die "$board_file: stage must be absolute"
+in_stage() { [[ $1 == /* ]] && echo "$1" || echo "$stage/$1"; }
+manifest_path() {
+	if [[ $1 == /* ]]; then echo "$1"; else echo "$hook_dir/manifests/$1.sha256"; fi
+}
+
+# Verify a runtime-like directory against its checked-in manifest. Every file
+# the manifest names must match; nothing outside it is used.
+verify_dir() {
+	local key=$1 dir manifest
+	dir=$(in_stage "${runtime_dirs[$key]}")
+	manifest=$(manifest_path "${runtime_manifests[$key]}")
+	[[ -f "$manifest" ]] || die "$key manifest ${runtime_manifests[$key]} is not shipped"
+	[[ -d "$dir" ]] || die "$key directory $dir is not staged"
+	(cd "$dir" && sha256sum -c --quiet --strict "$manifest") || die "$key in $dir does not match ${runtime_manifests[$key]}"
+}
+
+if ((check)); then
+	verify_dir runtime
+	[[ -z "${runtime_dirs[firehose]:-}" ]] || verify_dir firehose
+	[[ -z "${runtime_dirs[fastboot_runtime]:-}" ]] || verify_dir fastboot_runtime
+	echo "$me: $board_file ok"
+	exit 0
+fi
+
+# ------------------------------------------------------------ reference ----
+[[ -n "$ref" ]] || die "supply the staged image reference"
+mode='' own=''
+for i in "${!ref_modes[@]}"; do
+	if [[ "$ref" =~ ^(${ref_res[$i]})$ ]]; then
+		mode=${ref_modes[$i]}
+		own=${ref_flags[$i]}
+		break
+	fi
+done
+[[ -n "$mode" ]] || die "bad image reference $ref"
+if [[ -n "${opt[console]:-}" ]]; then
+	[[ "$device" == "${opt[console]}" ]] || die "wrong console ${device:-(none)}"
+fi
+
+if [[ $mode == fastboot-boot ]]; then
+	serial_file=$(in_stage "${opt[fastboot_serial_file]:-${opt[edl_serial_file]}}")
+	[[ -n "${runtime_dirs[fastboot_runtime]:-}" ]] || die "$board_file: fastboot-boot needs fastboot_runtime"
+else
+	serial_file=$(in_stage "${opt[edl_serial_file]}")
+fi
+serial=''
+[[ ! -f "$serial_file" ]] || IFS= read -r serial < "$serial_file" || true
+serial=${serial%$'\r'}
+[[ "$serial" =~ ^[[:alnum:]]+$ ]] || die "no device serial in $serial_file"
+
+if [[ $mode == digest ]]; then
+	[[ "$ref" =~ ^v1:([a-z0-9_]+):([0-9a-f]{64}):([A-Za-z0-9_][A-Za-z0-9_.-]*)$ ]] ||
+		die "digest reference is v1:<target>:<sha256>:<file>"
+	target=${BASH_REMATCH[1]} expected=${BASH_REMATCH[2]} name=${BASH_REMATCH[3]}
+	[[ -n "${digest_write[$target]:-}" ]] || die "no digest target $target"
+	[[ -n "${opt[digest_dir]:-}" ]] || die "$board_file: digest needs digest_dir"
+	images=$(in_stage "${opt[digest_dir]}")
+	[[ -f "$images/$name" && ! -L "$images/$name" ]] || die "$name is not staged (or is a symlink)"
+else
+	[[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "bad image reference $ref"
+	images="$stage/$ref"
+	[[ -d "$images" ]] || die "$ref is not staged"
+fi
+
+# One flash per stage at a time. The descriptor is closed for qdl so a qdl
+# orphaned by a timed-out hook cannot hold the lock against the next run.
+exec 9> "$stage/.qdl-flash.lock"
+flock -n 9 || die "another flash is running on $stage"
+
+verify_dir runtime
+[[ -z "${runtime_dirs[firehose]:-}" ]] || verify_dir firehose
+runtime=$(in_stage "${runtime_dirs[runtime]}")
+firehose=
+[[ -z "${runtime_dirs[firehose]:-}" ]] || firehose=$(in_stage "${runtime_dirs[firehose]}")
+
+if [[ $mode == digest ]]; then
+	mkdir -p "$stage/runs"
+	job=$(mktemp -d "$stage/runs/run-XXXXXXXX")
+	log="$job/flash.log"
+else
+	log="$images/flash.log"
+fi
+exec > >(tee -a "$log" 9>&-) 2>&1
+date -u
+echo "$me: $ref ($mode)"
+
+# A qdl left behind by a hook conminer timed out sits in "Waiting for EDL
+# device" and takes the next EDL entry mid-Sahara. Only this hook runs qdl from
+# this runtime and conminer runs one actuation per board, so any such qdl is
+# stale. The image has no pkill.
+for pid in /proc/[0-9]*; do
+	[[ ${pid#/proc/} != "$$" ]] || continue
+	cmd=$({ tr '\0' ' ' < "$pid/cmdline"; } 2> /dev/null) || continue
+	[[ "$cmd" == *"$runtime/qdl "* ]] || continue
+	echo "$me: stopping stale qdl ${pid#/proc/}"
+	kill -TERM "${pid#/proc/}" 2> /dev/null || true
+	sleep 2
+done
+
+# Below conminer's flash hook timeout, so qdl never outlives the hook.
+qdl=(timeout --signal=TERM --kill-after=5s "${opt[timeout_s]}s"
+	"$runtime/ld-linux-x86-64.so.2" --library-path "$runtime"
+	"$runtime/qdl" "--storage=${opt[storage]}" "--serial=$serial")
+[[ ${opt[debug]} == no ]] || qdl+=(--debug)
+[[ ${opt[reset]} == yes ]] || qdl+=(--skip-reset)
+((dry == 0)) || qdl+=(--dry-run)
+
+# Runs qdl from the programmer's directory: a Sahara XML names its loaders
+# relative to the working directory.
+run_qdl() {
+	local prog=$1
+	shift
+	echo "$me: qdl $(basename "$prog") $*"
+	(cd "$(dirname "$prog")" && "${qdl[@]}" "$prog" "$@" 9>&-)
+}
+
+listed() { awk -v f="$1" 'length($1) == 64 && ($2 == f || $2 == "*" f) { ok = 1 } END { exit !ok }' "$2"; }
+
+# The programmer: the image directory's own when it carries one (it must be in
+# SHA256SUMS), else the verified firehose set. `own-programmer` refuses the
+# fallback; `firehose-programmer` (or an empty directory) never looks for one.
+programmer() {
+	local dir=$1 policy=$2 p='' cand
+	((${#programmers[@]})) || die "$board_file: no programmer"
+	[[ $policy != firehose-programmer ]] || dir=''
+	for cand in "${programmers[@]}"; do
+		[[ -n "$dir" ]] || break
+		p=$(cd "$dir" && compgen -G "$cand" | sort | head -1) || true
+		[[ -z "$p" ]] || break
+	done
+	if [[ -n "$p" ]]; then
+		listed "$p" "$dir/SHA256SUMS" || die "$p is not in SHA256SUMS"
+		echo "$dir/$p"
+		return
+	fi
+	[[ $policy != own-programmer ]] || die "$ref must carry its own programmer"
+	[[ -n "$firehose" ]] || die "$board_file: no firehose set and $ref carries no programmer"
+	for cand in "${programmers[@]}"; do
+		p=$(cd "$firehose" && compgen -G "$cand" | sort | head -1) || true
+		[[ -z "$p" ]] || { echo "$firehose/$p"; return; }
+	done
+	die "no programmer in $firehose"
+}
+
+read_list() {
+	# partitions.txt for read/parts: "<target> <file>" per line.
+	local labels_only=$1 target file extra
+	[[ -s partitions.txt ]] || die "$ref needs partitions.txt"
+	pairs=()
+	while read -r target file extra; do
+		[[ -z "$target" || "$target" == \#* ]] && continue
+		if [[ $labels_only == 1 ]]; then
+			[[ "$target" =~ ^[0-9]+/[A-Za-z0-9_]+$ ]] || die "bad line: $target $file $extra"
+		else
+			[[ "$target" =~ ^[0-9]+/([A-Za-z0-9_]+|[0-9]+\+[0-9]+)$ ]] || die "bad line: $target $file $extra"
+		fi
+		[[ "$file" =~ ^[A-Za-z0-9._-]+$ && -z "$extra" ]] || die "bad line: $target $file $extra"
+		pairs+=("$target" "$file")
+	done < partitions.txt
+	((${#pairs[@]})) || die "$ref: partitions.txt lists nothing"
+}
+
+window_of() {
+	local p extra
+	[[ -f part.txt ]] || die "$ref needs part.txt"
+	[[ $(grep -cv '^[[:space:]]*$' part.txt) == 1 ]] || die "part.txt must hold exactly one window"
+	read -r p extra < <(grep -v '^[[:space:]]*$' part.txt)
+	[[ -z "$extra" && -n "${window_addr[$p]:-}" ]] || die "no window $p on this board"
+	echo "$p"
+}
+
+xml_args() {
+	compgen -G "rawprogram*.xml" > /dev/null || die "$ref has no rawprogram XML"
+	xmls=()
+	local x
+	while read -r x; do xmls+=("$images/$x"); done < <(ls rawprogram*.xml | sort -V)
+	while read -r x; do [[ -z "$x" ]] || xmls+=("$images/$x"); done < <(ls patch*.xml 2> /dev/null | sort -V || true)
+}
+
+cd "$images"
+case "$mode" in
+kind)
+	kind=${kind_names[0]:-}
+	[[ -n "$kind" ]] || die "$board_file: no kind lines"
+	[[ ! -f flash-kind.txt ]] || kind=$(tr -d '[:space:]' < flash-kind.txt)
+	payloads=() writes=()
+	for i in "${!kind_names[@]}"; do
+		[[ ${kind_names[$i]} == "$kind" ]] || continue
+		payloads+=("${kind_files[$i]}")
+		for t in ${kind_targets[$i]}; do writes+=(write "$t" "$images/${kind_files[$i]}"); done
+	done
+	((${#payloads[@]})) || die "unsupported flash kind: $kind"
+	mapfile -t sums < <(grep -v '^[[:space:]]*$' SHA256SUMS.flash 2> /dev/null || true)
+	((${#sums[@]} == ${#payloads[@]})) || die "SHA256SUMS.flash does not list exactly ${payloads[*]}"
+	for i in "${!payloads[@]}"; do
+		read -r digest filename extra <<< "${sums[$i]}"
+		[[ "$digest" =~ ^[[:xdigit:]]{64}$ && "$filename" == "${payloads[$i]}" && -z "${extra:-}" ]] ||
+			die "SHA256SUMS.flash line $((i + 1)) is not ${payloads[$i]}"
+	done
+	sha256sum -c --strict SHA256SUMS.flash || die "payload digest mismatch"
+	for f in "${payloads[@]}"; do
+		if [[ -n "${max_bytes[$f]:-}" ]]; then
+			limit=${max_bytes[$f]}
+			size=$(stat -c %s "$f")
+			((size > 0 && size <= limit)) || die "$f is $size bytes (1..$limit)"
+		fi
+	done
+	prog=$(programmer "$images" "$own")
+	run_qdl "$prog" "${writes[@]}"
+	;;
+xml | parts | xml-or-parts)
+	sha256sum -c --quiet --strict SHA256SUMS || die "SHA256SUMS does not verify"
+	if [[ $mode == xml-or-parts ]]; then
+		if compgen -G "rawprogram*.xml" > /dev/null; then mode=xml; else mode=parts; fi
+	fi
+	prog=$(programmer "$images" "$own")
+	if [[ $mode == xml ]]; then
+		xml_args
+		qdl+=("--include=$images")
+		run_qdl "$prog" "${xmls[@]}"
+	else
+		read_list 1
+		args=()
+		for ((i = 0; i < ${#pairs[@]}; i += 2)); do
+			f=${pairs[i + 1]}
+			[[ -f "$f" ]] || die "$f is not staged"
+			listed "$f" SHA256SUMS || die "$f is not in SHA256SUMS"
+			args+=(write "${pairs[i]}" "$images/$f")
+		done
+		run_qdl "$prog" "${args[@]}"
+	fi
+	;;
+read)
+	sha256sum -c --quiet --strict SHA256SUMS || die "SHA256SUMS does not verify"
+	read_list 0
+	args=() outs=()
+	for ((i = 0; i < ${#pairs[@]}; i += 2)); do
+		f=${pairs[i + 1]}
+		[[ ! -e "$f" ]] || die "$f already exists"
+		args+=(read "${pairs[i]}" "$images/$f")
+		outs+=("$f")
+	done
+	prog=$(programmer "$images" "$own")
+	run_qdl "$prog" "${args[@]}"
+	if ((dry == 0)); then
+		sha256sum "${outs[@]}" > SHA256SUMS.read
+		cat SHA256SUMS.read
+	fi
+	;;
+window-read)
+	part=$(window_of)
+	out="$part.bin"
+	[[ ! -e "$out" ]] || die "$out already exists"
+	addr=${window_addr[$part]}
+	prog=$(programmer "$images" "$own")
+	run_qdl "$prog" read "$addr" "$images/$out"
+	if ((dry == 0)); then
+		want=$((${addr##*+} * opt[sector_bytes]))
+		[[ $(stat -c %s "$out") == "$want" ]] || { echo "$me: short read of $part" >&2; exit 1; }
+		sha256sum "$out" > SHA256SUMS.read
+		cat SHA256SUMS.read
+	fi
+	;;
+window-write)
+	part=$(window_of)
+	[[ ${window_access[$part]} == rw ]] || die "refusing to write $part (read-only window)"
+	payload=${opt[nor_payload]:-}
+	[[ -n "$payload" ]] || die "$board_file: window-write needs nor_payload"
+	[[ -f SHA256SUMS && $(grep -cv '^[[:space:]]*$' SHA256SUMS) == 1 ]] && listed "$payload" SHA256SUMS ||
+		die "SHA256SUMS must hold exactly one line for $payload"
+	sha256sum -c --strict SHA256SUMS || die "payload digest mismatch"
+	addr=${window_addr[$part]}
+	limit=${addr##*+}
+	bs=${opt[sector_bytes]}
+	size=$(stat -c %s "$payload")
+	sectors=$(((size + bs - 1) / bs))
+	((size > 0 && sectors <= limit)) || die "$payload is $size bytes ($sectors sectors, max $limit)"
+	rm -f write.img readback.img
+	dd if="$payload" of=write.img bs="$bs" conv=sync status=none
+	addr="${addr%+*}+$sectors"
+	sum=$(sha256sum "$payload" | cut -d' ' -f1)
+	echo "$me: $part $addr $sum"
+	prog=$(programmer "$images" "$own")
+	run_qdl "$prog" write "$addr" "$images/write.img" read "$addr" "$images/readback.img"
+	if ((dry == 1)); then
+		echo "$me: dry run, nothing written or read"
+	elif cmp write.img readback.img; then
+		echo "READBACK MATCH $part sectors=$sectors sha256=$sum"
+	else
+		echo "READBACK MISMATCH $part sectors=$sectors" >&2
+		exit 1
+	fi
+	;;
+fastboot-boot)
+	sha256sum -c --quiet --strict SHA256SUMS || die "SHA256SUMS does not verify"
+	[[ -f boot.img ]] && listed boot.img SHA256SUMS || die "$ref needs boot.img listed in SHA256SUMS"
+	verify_dir fastboot_runtime
+	fbrt=$(in_stage "${runtime_dirs[fastboot_runtime]}")
+	fb=(timeout --signal=TERM --kill-after=5s "${opt[fastboot_timeout_s]}s"
+		"$fbrt/ld-linux-x86-64.so.2" --library-path "$fbrt" "$fbrt/fastboot" -s "$serial")
+	if ((dry == 1)); then
+		echo "$me: dry run: fastboot -s $serial boot boot.img"
+	else
+		"${fb[@]}" boot boot.img 9>&-
+	fi
+	;;
+digest)
+	bytes=$(stat -c %s "$name")
+	rule=${digest_rule[$target]} limit=${digest_bytes[$target]} bs=${opt[sector_bytes]}
+	if [[ $rule == exact ]]; then
+		[[ $bytes == "$limit" ]] || die "$name must be exactly $limit bytes"
+	else
+		((bytes > 0 && bytes <= limit)) || die "$name must be 1..$limit bytes"
+	fi
+	((bytes % bs == 0)) || die "$name is not whole $bs-byte sectors"
+	if [[ ${digest_readback[$target]} == whole ]]; then
+		window=${digest_write[$target]}
+	else
+		window="${digest_readback[$target]}+$((bytes / bs))"
+	fi
+	[[ "$(sha256sum "$name" | cut -d' ' -f1)" == "$expected" ]] || die "image digest mismatch"
+	prog=$(programmer "" "")
+	# qdl reads a private, verified snapshot, never a path being restaged.
+	cp --reflink=auto "$name" "$job/$target.bin"
+	cp "$prog" "$job/"
+	[[ "$(sha256sum "$job/$target.bin" | cut -d' ' -f1)" == "$expected" ]] || die "snapshot digest mismatch"
+	cmp -s "$prog" "$job/${prog##*/}" || die "programmer changed during snapshot"
+	printf 'image_sha256=%s\ntarget=%s\nwindow=%s\n' "$expected" "$target" "$window" > "$job/inputs.txt"
+	echo "$me: evidence $job"
+	run_qdl "$job/${prog##*/}" write "${digest_write[$target]}" "$job/$target.bin"
+	if ((dry == 1)); then
+		echo "$me: dry run, nothing written or verified"
+	else
+		run_qdl "$job/${prog##*/}" sha256 "$window" > "$job/verify.log" 2>&1 || {
+			cat "$job/verify.log"
+			echo "$me: readback failed" >&2
+			exit 1
+		}
+		cat "$job/verify.log"
+		# One standalone digest from the device, never a filename or an echo.
+		actual=$(tr -d '\r' < "$job/verify.log" | awk 'length($0) == 64 && $0 !~ /[^0-9a-fA-F]/ { print tolower($0) }')
+		[[ "$actual" == "$expected" ]] || { echo "$me: device readback digest mismatch or ambiguous" >&2; exit 1; }
+		echo "VERIFIED_SHA256=$actual"
+	fi
+	;;
+esac
+echo "$me: $ref done"
