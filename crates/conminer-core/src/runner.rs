@@ -739,6 +739,19 @@ impl<T: Transport> Runner<T> {
         }
     }
 
+    /// Read for up to `d`, returning as soon as `ch` appears past `from`.
+    async fn soak_until_char(&mut self, ch: char, from: usize, d: Duration) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + d;
+        while !self.buf[from..].contains(ch) {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            self.soak(left.min(Duration::from_millis(20))).await?;
+        }
+        Ok(())
+    }
+
     /// Wait until the console has been quiet for `settle_quiet_ms`.
     async fn settle(&mut self) -> Result<()> {
         let quiet = Duration::from_millis(self.opts.cfg.settle_quiet_ms.max(1));
@@ -1003,33 +1016,34 @@ impl<T: Transport> Runner<T> {
         let delay = Duration::from_millis(self.opts.cfg.char_delay_ms);
         let echo_wait = Duration::from_millis(self.opts.cfg.echo_timeout_ms.max(1));
 
+        // A missed echo is ambiguous: the character may be lost or only late.
+        // Typing it again doubles it in the shell's line whenever it was late
+        // (a line editor redrawing a long line, a console busy with kernel
+        // output), and nothing afterwards can tell, so a miss only extends the
+        // wait. A character that never echoes ends the transaction.
+        let late_wait = echo_wait.saturating_mul(10);
         for (i, ch) in cmd.char_indices() {
-            let bytes = cmd.as_bytes()[i..i + ch.len_utf8()].to_vec();
-            let mut attempt = 0;
-            loop {
-                if let Err(e) = self.io.write_all(&bytes).await {
-                    return Err(Transaction::failed(
-                        Outcome::EchoMismatch,
-                        cmd,
-                        self.tail(),
-                        json!({"io": e.message, "at_char": i}),
-                    ));
-                }
-                if !self.opts.echo {
-                    // No-echo console: pacing only, which is the honest
-                    // downgrade — we cannot verify what we cannot observe.
-                    break;
-                }
+            let bytes = &cmd.as_bytes()[i..i + ch.len_utf8()];
+            if let Err(e) = self.io.write_all(bytes).await {
+                return Err(Transaction::failed(
+                    Outcome::EchoMismatch,
+                    cmd,
+                    self.tail(),
+                    json!({"io": e.message, "at_char": i}),
+                ));
+            }
+            if self.opts.echo {
                 let before = self.buf.len();
                 let _ = self.soak(echo_wait).await;
-                let echoed = self.buf[before..].contains(ch);
-                if echoed {
-                    break;
+                if !self.buf[before..].contains(ch) {
+                    let _ = self.soak_until_char(ch, before, late_wait).await;
                 }
-                attempt += 1;
-                if attempt >= 2 {
-                    // Retried once and still lost: abort rather than send a
-                    // half-formed command into a shell.
+                if !self.buf[before..].contains(ch) {
+                    let observed = self.buf[before..].to_string();
+                    // Drop the half-typed line, or the next transaction's
+                    // newline probe would run it.
+                    let _ = self.io.write_all(b"\x03").await;
+                    let _ = self.soak(echo_wait).await;
                     return Err(Transaction::failed(
                         Outcome::EchoMismatch,
                         cmd,
@@ -1037,8 +1051,8 @@ impl<T: Transport> Runner<T> {
                         json!({
                             "at_char": i,
                             "expected": ch.to_string(),
-                            "observed": self.buf[before..].to_string(),
-                            "attempts": attempt,
+                            "observed": observed,
+                            "waited_ms": (echo_wait + late_wait).as_millis() as u64,
                         }),
                     ));
                 }

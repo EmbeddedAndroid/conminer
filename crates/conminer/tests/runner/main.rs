@@ -1,8 +1,8 @@
 //! Suite `runner` (§8.3, §13) — the interactive command runner.
 //!
 //! Edge cases: happy path · echo verification catches an injected dropped or
-//! corrupted char · per-char retry succeeds, then aborts correctly on repeat
-//! failure · no-echo console mode · command during boot (no prompt) →
+//! corrupted char · a late echo is waited for and the character is never typed
+//! twice · no-echo console mode · command during boot (no prompt) →
 //! `NO_PROMPT`, not a blind send · prompt scrolled by async kernel messages
 //! mid-command · each recovery rung individually · TX lock serialisation ·
 //! distinctive-prompt validation rejects `:`.
@@ -47,6 +47,11 @@ struct Inner {
     /// console really did receive something else.
     corrupt_char: Option<char>,
     typed: usize,
+    /// Hold the Nth character's echo back for `late_ms`: the console received
+    /// it, and says so late.
+    late_nth: usize,
+    late_ms: u64,
+    late: Option<(std::time::Instant, u8)>,
     /// Never print the prompt again: the console is wedged.
     hung: bool,
     /// Which control byte un-wedges it, if any.
@@ -71,6 +76,9 @@ impl FakeConsole {
                 drop_char: None,
                 corrupt_char: None,
                 typed: 0,
+                late_nth: 0,
+                late_ms: 0,
+                late: None,
                 hung: false,
                 unwedge: None,
                 noise: None,
@@ -140,6 +148,11 @@ impl Transport for FakeConsole {
             if let Some(noise) = i.noise.clone() {
                 i.out.extend(noise.as_bytes());
             }
+            if i.late_nth != 0 && n == i.late_nth {
+                let at = std::time::Instant::now() + Duration::from_millis(i.late_ms);
+                i.late = Some((at, b));
+                continue;
+            }
             i.out.push_back(if corrupt { b'#' } else { b });
         }
         Ok(())
@@ -150,6 +163,12 @@ impl Transport for FakeConsole {
         loop {
             {
                 let mut i = self.inner.lock().unwrap();
+                if let Some((at, b)) = i.late {
+                    if std::time::Instant::now() >= at {
+                        i.late = None;
+                        i.out.push_back(b);
+                    }
+                }
                 if !i.out.is_empty() {
                     let n = buf.len().min(i.out.len());
                     for (k, slot) in buf.iter_mut().enumerate().take(n) {
@@ -243,7 +262,7 @@ async fn a_dropped_character_is_caught_by_echo_verification() {
     assert_eq!(t.status, Outcome::EchoMismatch);
     assert_eq!(t.detail["at_char"], 2);
     assert_eq!(t.detail["expected"], "b");
-    assert!(t.detail["attempts"].as_i64().unwrap() >= 2);
+    assert!(t.detail["waited_ms"].as_u64().unwrap() > 60);
 }
 
 #[tokio::test]
@@ -258,22 +277,50 @@ async fn a_corrupted_echo_is_caught_too() {
     assert_eq!(t.detail["expected"], "s");
 }
 
+/// Measured on hardware: a shell answered "cat: /sys/devices/soc0/machhine" to
+/// a command typed with echo verification on. A character whose echo arrived
+/// after the first window had been typed again, and the console received both.
 #[tokio::test]
-async fn a_transient_loss_is_retried_once_and_succeeds() {
-    // Dropped on the first attempt, echoed on the retry.
-    let console = FakeConsole::new("# ").reply("id", "uid=0(root)");
-    {
-        let mut i = console.inner.lock().unwrap();
-        i.drop_nth = 1;
-    }
+async fn a_late_echo_is_waited_for_and_the_character_is_typed_once() {
+    let console = FakeConsole::new("# ")
+        .reply("cat machine", "Snapdragon")
+        .with(|i| {
+            i.late_nth = 8;
+            i.late_ms = 150;
+        });
+    let t = Runner::new(console.clone(), shell_prompts(), opts())
+        .run("cat machine")
+        .await
+        .unwrap();
+    assert_eq!(t.status, Outcome::Ok, "{:?}", t.detail);
+    assert_eq!(t.output, "Snapdragon");
+    assert!(
+        console.written().contains("cat machine\n"),
+        "{}",
+        console.written()
+    );
+    assert_eq!(console.written().matches('h').count(), 1);
+}
+
+/// A lost character is not retyped either: the shell's line would be
+/// whatever the console made of it, so the transaction fails instead.
+#[tokio::test]
+async fn a_lost_character_fails_the_transaction_without_retyping_it() {
+    let console = FakeConsole::new("# ")
+        .reply("id", "uid=0(root)")
+        .with(|i| i.drop_nth = 1);
     let t = Runner::new(console.clone(), shell_prompts(), opts())
         .run("id")
         .await
         .unwrap();
-    assert_eq!(t.status, Outcome::Ok, "{:?}", t.detail);
-    assert_eq!(t.output, "uid=0(root)");
-    // The retry really was sent: `i` appears twice on the wire.
-    assert_eq!(console.written().matches('i').count(), 2);
+    assert_eq!(t.status, Outcome::EchoMismatch);
+    assert_eq!(t.detail["expected"], "i");
+    let wire = console.written();
+    assert_eq!(wire.matches('i').count(), 1);
+    // The half-typed line is cancelled, never terminated.
+    let typed = wire.rfind('i').unwrap();
+    assert!(wire[typed..].ends_with('\x03'), "{wire:?}");
+    assert!(!wire[typed..].contains('\n'), "{wire:?}");
 }
 
 #[tokio::test]
