@@ -58,6 +58,12 @@ pub struct DeviceOverride {
     /// than blamed on whoever asked.
     #[serde(default)]
     pub usb_ports: Vec<String>,
+    /// A file holding the USB serial this board's fastboot gadget presents.
+    /// `boot_mode FASTBOOT` waits for a fastboot device with that serial, so
+    /// another board in fastboot is never taken for this one. A file rather
+    /// than a value because the serial belongs to the board's boot loader and
+    /// changes with it; the lab's flashing tooling reads the same file.
+    pub fastboot_serial_file: Option<PathBuf>,
 }
 
 /// External command hooks. conminer never flashes or switches power itself; it
@@ -673,6 +679,10 @@ pub struct HooksConfig {
     /// produce the false negative round 4 filed as R4.
     #[serde(default = "default_edl_settle_s")]
     pub edl_settle_s: u64,
+    /// How long `boot_mode FASTBOOT` waits, after its hook returns, for the
+    /// board's fastboot device before saying it did not appear.
+    #[serde(default = "default_fastboot_settle_s")]
+    pub fastboot_settle_s: u64,
 }
 
 fn default_verify_settle_s() -> u64 {
@@ -687,6 +697,9 @@ fn default_verify_boot_watch_s() -> u64 {
 fn default_edl_settle_s() -> u64 {
     8
 }
+fn default_fastboot_settle_s() -> u64 {
+    20
+}
 
 impl Default for HooksConfig {
     fn default() -> Self {
@@ -697,6 +710,7 @@ impl Default for HooksConfig {
             verify_off_watch_s: default_verify_off_watch_s(),
             verify_boot_watch_s: default_verify_boot_watch_s(),
             edl_settle_s: default_edl_settle_s(),
+            fastboot_settle_s: default_fastboot_settle_s(),
         }
     }
 }
@@ -2096,6 +2110,11 @@ impl Config {
         self.device_override(keys)
             .map(|d| d.usb_ports.clone())
             .unwrap_or_default()
+    }
+
+    pub fn fastboot_serial_file_for(&self, keys: &[&str]) -> Option<PathBuf> {
+        self.device_override(keys)
+            .and_then(|d| d.fastboot_serial_file.clone())
     }
 
     pub fn hung_after_s_for(&self, keys: &[&str]) -> u64 {

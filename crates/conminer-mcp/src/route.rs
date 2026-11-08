@@ -477,6 +477,7 @@ fn parse_code(code: &str) -> ErrorCode {
         "ACTUATION_IN_FLIGHT" => ErrorCode::ActuationInFlight,
         "AWAY_IN_EDL" => ErrorCode::AwayInEdl,
         "NORMAL_BOOT_ABORTED" => ErrorCode::NormalBootAborted,
+        "FASTBOOT_NOT_ENTERED" => ErrorCode::FastbootNotEntered,
         _ => ErrorCode::Internal,
     }
 }
@@ -504,6 +505,7 @@ mod tests {
             ErrorCode::ActuationInFlight,
             ErrorCode::AwayInEdl,
             ErrorCode::NormalBootAborted,
+            ErrorCode::FastbootNotEntered,
         ] {
             assert_eq!(
                 parse_code(c.as_str()),

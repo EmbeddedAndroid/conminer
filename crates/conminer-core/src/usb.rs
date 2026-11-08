@@ -222,6 +222,9 @@ pub struct Identified {
     pub serial: Option<String>,
     pub product: Option<String>,
     pub class: u8,
+    /// Carries the fastboot interface (vendor class 0xff, subclass 0x42,
+    /// protocol 0x03), the one the `fastboot` tool looks for.
+    pub fastboot: bool,
 }
 
 impl Identified {
@@ -252,7 +255,8 @@ impl Identified {
 }
 
 /// Every device on the bus with its identity strings. Respects the test fixture
-/// like [`scan`]; fixture rows may carry `serial`, `product` and `class`.
+/// like [`scan`]; fixture rows may carry `serial`, `product`, `class` and
+/// `fastboot`.
 pub fn list_identified() -> Vec<Identified> {
     if let Some(rows) = fixture_rows() {
         return rows
@@ -264,6 +268,7 @@ pub fn list_identified() -> Vec<Identified> {
                 serial: r["serial"].as_str().map(str::to_string),
                 product: r["product"].as_str().map(str::to_string),
                 class: r["class"].as_u64().unwrap_or(0) as u8,
+                fastboot: r["fastboot"].as_bool().unwrap_or(false),
             })
             .collect();
     }
@@ -285,6 +290,9 @@ fn identified_from_sysfs() -> Vec<Identified> {
         serial: d.serial_number().map(str::to_string),
         product: d.product_string().map(str::to_string),
         class: d.class(),
+        fastboot: d
+            .interfaces()
+            .any(|i| (i.class(), i.subclass(), i.protocol()) == (0xff, 0x42, 0x03)),
     })
     .collect()
 }
@@ -314,6 +322,63 @@ pub fn appeared<'a>(before: &[Identified], after: &'a [Identified]) -> Vec<&'a I
         .iter()
         .filter(|d| !d.is_hub() && !seen.contains(&key(d)))
         .collect()
+}
+
+/// The fastboot device whose USB serial is `serial`, if one is on the bus.
+///
+/// The serial alone is not enough: a board's running OS can present the same
+/// serial on its own gadget, which is not in fastboot.
+pub fn fastboot_with_serial<'a>(devices: &'a [Identified], serial: &str) -> Option<&'a Identified> {
+    devices
+        .iter()
+        .find(|d| d.fastboot && d.serial.as_deref().map(str::trim) == Some(serial))
+}
+
+/// Does this listed device still answer a descriptor read?
+///
+/// A sysfs listing is not liveness: a gadget whose host side never saw a
+/// detach stays listed with cached descriptors. One device is probed, not the
+/// whole bus. A device that cannot be opened for another reason than ENODEV
+/// counts as answering, as in [`scan`]. Fixture rows answer per their `live`
+/// field.
+pub fn still_answers(dev: &Identified) -> bool {
+    if let Some(rows) = fixture_rows() {
+        return rows
+            .iter()
+            .find(|r| {
+                r["port_path"].as_str() == dev.port_path.as_deref()
+                    && r["serial"].as_str() == dev.serial.as_deref()
+            })
+            .and_then(|r| r["live"].as_bool())
+            .unwrap_or(true);
+    }
+    answers_on_bus(dev)
+}
+
+#[cfg(target_os = "linux")]
+fn answers_on_bus(dev: &Identified) -> bool {
+    let Ok(mut list) = nusb::list_devices() else {
+        return false;
+    };
+    list.find(|d| {
+        d.vendor_id() == dev.vendor_id
+            && d.product_id() == dev.product_id
+            && d.sysfs_path()
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                == dev.port_path
+    })
+    .is_some_and(|d| match d.open() {
+        Ok(h) => device_answers(&h),
+        // As in `scan`: only ENODEV is a gone device. Any other open error
+        // (no usbfs rights) means it could not be asked.
+        Err(e) => e.raw_os_error() != Some(libc::ENODEV),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn answers_on_bus(_dev: &Identified) -> bool {
+    false
 }
 
 /// The port paths where devices with any of these identities are right now.
@@ -707,7 +772,30 @@ mod tests {
             serial: serial.map(str::to_string),
             product: product.map(str::to_string),
             class,
+            fastboot: false,
         }
+    }
+
+    #[test]
+    fn fastboot_with_serial_needs_the_fastboot_interface_and_the_serial() {
+        let running = ident("1-3.4", Some("0123456789"), None, 0);
+        let other = Identified {
+            fastboot: true,
+            ..ident("1-3.5", Some("fedcba98"), None, 0)
+        };
+        let ours = Identified {
+            product_id: 0x4ee0,
+            fastboot: true,
+            ..ident("1-3.4", Some("0123456789"), None, 0)
+        };
+        assert_eq!(
+            fastboot_with_serial(&[running.clone(), other.clone()], "0123456789"),
+            None
+        );
+        assert_eq!(
+            fastboot_with_serial(&[running, other, ours.clone()], "0123456789"),
+            Some(&ours)
+        );
     }
 
     #[test]
@@ -764,7 +852,9 @@ mod tests {
         assert!(ports_of(&bus, &[]).is_empty());
     }
 
-    use super::{appeared, ports_of, recovery_present_in, GadgetSig, Identified};
+    use super::{
+        appeared, fastboot_with_serial, ports_of, recovery_present_in, GadgetSig, Identified,
+    };
 
     #[test]
     fn a_gadget_signature_parses_exact_and_wildcard_forms() {

@@ -109,6 +109,7 @@ max_s = 14400
 [hooks]
 power_timeout_s = 30
 flash_timeout_s = 600
+fastboot_settle_s = 20      # boot_mode FASTBOOT waits this long for the board's fastboot device
 
 [credentials]
 # Per-device login credentials live in a separate 0600 file, never in the

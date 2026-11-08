@@ -1058,6 +1058,85 @@ pub(crate) fn declared_usb_ports(ctx: &Context, d: &DeviceRow) -> Vec<String> {
     ports
 }
 
+/// Wait for the board's fastboot device after a FASTBOOT entry.
+///
+/// `found` is present only when there was something to look for: a board with
+/// no configured serial, or an unreadable one, answers `checked: false` and
+/// why, because a fastboot device that cannot be attributed proves nothing.
+/// The serial is the board's, so it may be configured on any of its consoles.
+fn verify_fastboot(ctx: &Context, d: &DeviceRow) -> Value {
+    let file = std::iter::once(d.clone())
+        .chain(board_siblings(ctx, d))
+        .find_map(|c| {
+            ctx.config().fastboot_serial_file_for(&[
+                c.canonical.as_str(),
+                c.display_name(),
+                c.label().unwrap_or_default(),
+            ])
+        });
+    let Some(file) = file else {
+        return json!({
+            "checked": false,
+            "why": "no fastboot_serial_file is configured on any of this board's consoles, so \
+                    a fastboot device cannot be attributed to it",
+        });
+    };
+    let serial = match std::fs::read_to_string(&file) {
+        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        Ok(_) => return json!({"checked": false, "serial_file": file, "why": "the file is empty"}),
+        Err(e) => {
+            return json!({
+                "checked": false,
+                "serial_file": file,
+                "why": format!("cannot read it: {e}"),
+            })
+        }
+    };
+    let wait = std::time::Duration::from_secs(ctx.config().hooks.fastboot_settle_s);
+    let started = std::time::Instant::now();
+    loop {
+        let bus = conminer_core::usb::list_identified();
+        let waited_ms = started.elapsed().as_millis() as u64;
+        // A listed device is not a live one: a gadget left from an earlier
+        // entry can stay listed after the board has booted on.
+        if let Some(dev) = conminer_core::usb::fastboot_with_serial(&bus, &serial)
+            .filter(|dev| conminer_core::usb::still_answers(dev))
+        {
+            return json!({
+                "checked": true,
+                "found": true,
+                "serial": serial,
+                "usb_id": format!("{:04x}:{:04x}", dev.vendor_id, dev.product_id),
+                "port": dev.port_path,
+                "waited_ms": waited_ms,
+            });
+        }
+        if started.elapsed() >= wait {
+            let seen: Vec<Value> = bus
+                .iter()
+                .filter(|b| b.fastboot)
+                .map(|b| {
+                    json!({
+                        "serial": b.serial,
+                        "usb_id": format!("{:04x}:{:04x}", b.vendor_id, b.product_id),
+                        "port": b.port_path,
+                        "answers": conminer_core::usb::still_answers(b),
+                    })
+                })
+                .collect();
+            return json!({
+                "checked": true,
+                "found": false,
+                "serial": serial,
+                "serial_file": file,
+                "waited_ms": waited_ms,
+                "seen": seen,
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 /// `{fastboot_hold_ms}` for a boot-mode hook: the board's controller profile
 /// decides, and a hook from anywhere else gets the built-in default.
 fn fastboot_hold_ms(ctx: &Context, d: &DeviceRow) -> String {
@@ -4378,7 +4457,10 @@ pub fn registry() -> &'static [Tool] {
                           silicon. On a latching controller a mode stays HELD until it is \
                           released: `release: true` takes back that one mode, `mode: \"clear\"` \
                           releases them all, and the answer always carries the controller's own \
-                          readback of what is held now.",
+                          readback of what is held now. FASTBOOT on a board with a configured \
+                          fastboot serial waits up to `hooks.fastboot_settle_s` for that \
+                          device; FASTBOOT_NOT_ENTERED means the board WAS actuated and booted \
+                          on, so read the epoch before retrying.",
             mutating: true,
             schema: || json!({
                 "type": "object",
@@ -4628,6 +4710,32 @@ pub fn registry() -> &'static [Tool] {
                                to enter the mode, and clear the strap when you are done.")
                     },
                 });
+                // A FASTBOOT entry is proven by the board's own fastboot device,
+                // not by the hook's exit code: the boot loader reads the key on
+                // its own schedule, and one that missed it boots on as normal.
+                if immediate && !clearing && !releasing && mode.eq_ignore_ascii_case("fastboot") {
+                    let check = verify_fastboot(ctx, &d);
+                    if check["found"] == json!(false) {
+                        return Err(ToolError::new(
+                            ErrorCode::FastbootNotEntered,
+                            format!(
+                                "{} was sequenced into FASTBOOT, but no fastboot device with \
+                                 serial {} appeared within {} ms",
+                                d.display_name(),
+                                check["serial"].as_str().unwrap_or_default(),
+                                check["waited_ms"],
+                            ),
+                        )
+                        .with_detail(json!({
+                            "mode": mode,
+                            "boot_id": payload["boot_id"],
+                            "opened": opened,
+                            "hook": result,
+                            "fastboot": check,
+                        })));
+                    }
+                    payload["fastboot"] = check;
+                }
                 if let Some(o) = payload.as_object_mut() {
                     if scope.target.is_some() {
                         o.insert("target".into(), json!(scope.target));

@@ -91,6 +91,7 @@ fn every_documented_default_is_applied_from_an_empty_file() {
     assert_eq!(c.lease.max_s, 14_400);
     assert_eq!(c.hooks.power_timeout_s, 30);
     assert_eq!(c.hooks.flash_timeout_s, 600);
+    assert_eq!(c.hooks.fastboot_settle_s, 20);
     assert_eq!(c.credentials.file, "", "credentials are unset by default");
 
     // service & api
@@ -533,6 +534,8 @@ fastboot_hold_ms = 14000
     .unwrap();
     let mtp = c.controllers.iter().find(|c| c.name == "tac-mtp").unwrap();
     assert_eq!(mtp.fastboot_hold_ms, 14_000);
+    let c = Config::from_toml_str("[hooks]\nfastboot_settle_s = 5\n").unwrap();
+    assert_eq!(c.hooks.fastboot_settle_s, 5);
 }
 
 /// The same trap, for the TAC: one FT4232H is BOTH the board's two consoles and

@@ -96,6 +96,10 @@ pub enum ErrorCode {
     /// that read this as a generic hook failure would go looking for a boot that
     /// never started. `detail.step` says which half failed.
     NormalBootAborted,
+    /// `boot_mode FASTBOOT` ran, and no fastboot device with the board's own
+    /// serial appeared. The board was actuated: it is booting, just not into
+    /// fastboot, and `detail.boot_id` is the epoch that boot landed in.
+    FastbootNotEntered,
     /// Low-level `send` passthrough is disabled by config.
     SendDisabled,
 
@@ -199,6 +203,11 @@ impl ErrorCode {
                 "power was NOT cycled. detail.step says whether the clear or its readback \
                  failed; read boot_overrides to see what the controller holds now"
             }
+            FastbootNotEntered => {
+                "the board was actuated but is not in fastboot. detail.seen lists the fastboot \
+                 devices that were on the bus; read the boot epoch in detail.boot_id to see \
+                 what the boot loader did with the key"
+            }
             SendDisabled => {
                 "set CONMINER_RUNNER_ALLOW_RAW_SEND=true in the node's .env (or \
                  runner.allow_raw_send=true in conminer.toml) to enable the passthrough"
@@ -253,6 +262,7 @@ impl ErrorCode {
             ErrorCode::ActuationInFlight,
             ErrorCode::AwayInEdl,
             ErrorCode::NormalBootAborted,
+            ErrorCode::FastbootNotEntered,
             ErrorCode::SendDisabled,
             ErrorCode::HookNotConfigured,
             ErrorCode::HookFailed,

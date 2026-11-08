@@ -65,6 +65,33 @@ The hold is a controller setting, so a node can tune it without a rebuild:
 <console>` prints the exact pin sequence without driving anything. Holds over
 50000 ms are refused: the whole sequence must fit in the hook timeout.
 
+### Verifying the entry
+
+A FASTBOOT entry is proven by the board's own fastboot device, not by the
+hook's exit code. Name the file holding the serial the board's fastboot
+gadget presents (U-Boot's `serial#`, or the stock boot loader's) on the
+board's console:
+
+    [devices."/dev/serial/by-id/usb-FTDI_ALPACA-LITE_MTP_DEBUG_BOARD_<serial>-if00-port0"]
+    fastboot_serial_file = "/exports/<board>/fastboot-serial"
+
+`boot_mode FASTBOOT` then waits up to `hooks.fastboot_settle_s` (default 20)
+after the sequence for a USB device carrying the fastboot interface (class
+0xff, subclass 0x42, protocol 0x03) with exactly that serial. The serial alone
+is not enough, because the board's running OS can present it too.
+
+- Found: the response carries `fastboot: {found: true, usb_id, port,
+  waited_ms}`.
+- Not found: the call fails with `FASTBOOT_NOT_ENTERED`. The board WAS
+  actuated; `detail.boot_id` names the boot it started, and
+  `detail.fastboot.seen` lists the fastboot devices that were on the bus
+  (another board's, or this board's with a different serial).
+- No file configured, or unreadable or empty: the mode runs and says
+  `fastboot: {checked: false, why}`.
+
+The file is read on every call, so updating it when the boot loader changes
+needs no restart.
+
 ## Physical switches
 
 On the MTP the Alpaca-lite only drives the board when the `ALPACA DISABLE`

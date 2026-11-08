@@ -109,6 +109,10 @@ name = "line-modes"
 path = "tests/line_modes/main.rs"
 
 [[test]]
+name = "fastboot-entry"
+path = "tests/fastboot_entry/main.rs"
+
+[[test]]
 name = "framer-zephyr"
 path = "tests/framer_zephyr/main.rs"
 
