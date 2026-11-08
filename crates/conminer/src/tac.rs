@@ -9,13 +9,19 @@
 
 use anyhow::{bail, Result};
 use conminer_core::tac::{
-    boot_modes, catalogue, run_sequence, sequence, Action, PinSink, Step, Tac, TacProbe, TacProfile,
+    boot_modes, catalogue, run_sequence, sequence_timed, Action, PinSink, Step, Tac, TacProbe,
+    TacProfile,
 };
+
+/// The longest FASTBOOT hold accepted: the whole sequence must finish inside
+/// the controller's hook timeout.
+const MAX_FASTBOOT_HOLD_MS: u64 = 50_000;
 
 pub fn run(
     action: &str,
     arg: &str,
     settle: f64,
+    fastboot_hold_ms: u64,
     serial: &str,
     device: &str,
     dry_run: bool,
@@ -26,6 +32,9 @@ pub fn run(
     // someone powers the board.
     let extra = catalogue();
     let settle_ms = (settle.clamp(0.1, 60.0) * 1000.0) as u64;
+    if fastboot_hold_ms > MAX_FASTBOOT_HOLD_MS {
+        bail!("--fastboot-hold-ms {fastboot_hold_ms} is over the {MAX_FASTBOOT_HOLD_MS} ms limit");
+    }
 
     // QUESTIONS FIRST, and before the action vocabulary is consulted at all.
     // `id` and `power-state` are not board actions and have no pin sequence, so
@@ -66,7 +75,8 @@ pub fn run(
         // one rides along as context.
         //
         // The first token is the contract: conminer parses it by equality.
-        let commanded = tac.read_pin("pwr_off").ok().map(|off| !off);
+        let (off_pin, off_level) = tac.profile.power_off_pin();
+        let commanded = tac.read_pin(off_pin).ok().map(|v| v != off_level);
         let sensed = tac
             .profile
             .sense
@@ -96,7 +106,7 @@ pub fn run(
             Some(a) => a,
             None => bail!(
                 "unknown TAC boot mode {arg:?}; this controller offers {:?} (or \"clear\")",
-                known_modes(extra)
+                known_modes(serial, device, extra)
             ),
         },
         other => match Action::parse(other) {
@@ -111,7 +121,7 @@ pub fn run(
     // USB match, so it still proves WHICH board would have been driven.
     if dry_run {
         let (_, profile) = Tac::resolve(serial, device, extra)?;
-        let steps = sequence(&profile, act, settle_ms)?;
+        let steps = sequence_timed(&profile, act, settle_ms, fastboot_hold_ms)?;
         println!("  TAC {} ({})", profile.usb_descriptor, act.as_str());
         for step in &steps {
             match step {
@@ -126,7 +136,7 @@ pub fn run(
     // Everything past here DRIVES the board, so this is where the interface is
     // claimed.
     let mut tac = Tac::open_for(serial, device, extra)?;
-    let steps = sequence(&tac.profile, act, settle_ms)?;
+    let steps = sequence_timed(&tac.profile, act, settle_ms, fastboot_hold_ms)?;
     // The TAC's output enable gates the software-download and RESOUT paths, and
     // its configured initial value is HIGH. Assert it before any sequence that
     // uses a strap, and never as part of the sequence itself -- it is a
@@ -146,10 +156,13 @@ pub fn run(
     Ok(())
 }
 
-fn known_modes(extra: &[TacProfile]) -> Vec<String> {
-    extra
-        .first()
-        .cloned()
+/// The modes of the board this selector names, so the error lists what THIS
+/// controller can do rather than whichever profile happens to be first.
+fn known_modes(serial: &str, device: &str, extra: &[TacProfile]) -> Vec<String> {
+    Tac::resolve(serial, device, extra)
+        .map(|(_, p)| p)
+        .ok()
+        .or_else(|| extra.first().cloned())
         .or_else(|| TacProfile::builtin().into_iter().next())
         .map(|p| boot_modes(&p))
         .unwrap_or_default()

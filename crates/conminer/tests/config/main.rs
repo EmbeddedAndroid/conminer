@@ -458,6 +458,83 @@ fn a_controller_that_is_also_a_console_stays_discoverable() {
     assert!(bantam.exclude_from_discovery, "the Bantam is control-only");
 }
 
+/// The MTP Alpaca-lite: its consoles bind the `tac-mtp` controller, and its
+/// two GPIO channels, which ftdi_sio exposes as ttys on a fresh host, never
+/// reach ser2net.
+#[test]
+fn an_mtp_alpaca_lite_binds_its_controller_and_hides_its_gpio() {
+    let cfg = Config::default();
+    let base = "usb-FTDI_ALPACA-LITE_MTP_DEBUG_BOARD_FT0MTP01";
+    for ch in ["00", "01"] {
+        let console = format!("{base}-if{ch}-port0");
+        assert!(cfg.device_included(&console), "{console} excluded");
+        assert_eq!(
+            cfg.controller_for(&console).map(|c| c.name.as_str()),
+            Some("tac-mtp"),
+            "{console} must resolve the MTP TAC"
+        );
+    }
+    for ch in ["02", "03"] {
+        let gpio = format!("{base}-if{ch}-port0");
+        assert!(
+            !cfg.device_included(&gpio),
+            "{gpio} is a bit-bang GPIO port, not a console"
+        );
+    }
+    let mtp = cfg
+        .controllers
+        .iter()
+        .find(|c| c.name == "tac-mtp")
+        .unwrap();
+    assert_eq!(
+        mtp.boot_modes,
+        vec!["EDL", "UEFI", "FASTBOOT", "EUD", "USB_OFF", "USB_ON"]
+    );
+    assert_eq!(mtp.line_modes, vec!["USB_OFF", "USB_ON"]);
+    assert!(!mtp.exclude_from_discovery);
+}
+
+/// The MTP's FASTBOOT volume-down hold is a measured board timing: 10 s after
+/// the power-key release, pinned in both the compiled default and the shipped
+/// file, reaching the hook as `{fastboot_hold_ms}`, and overridable per
+/// controller without a rebuild.
+#[test]
+fn the_mtp_fastboot_hold_is_pinned_and_overridable() {
+    for (what, cfg) in [("default", Config::default()), ("shipped", shipped())] {
+        let mtp = cfg
+            .controllers
+            .iter()
+            .find(|c| c.name == "tac-mtp")
+            .unwrap();
+        assert_eq!(mtp.fastboot_hold_ms, 10_000, "{what}");
+        assert!(
+            mtp.boot_mode
+                .as_deref()
+                .unwrap()
+                .contains("--fastboot-hold-ms {fastboot_hold_ms}"),
+            "{what}: {:?}",
+            mtp.boot_mode
+        );
+        assert!(
+            mtp.power_timeout_s.unwrap() * 1000 > mtp.fastboot_hold_ms + 5_000,
+            "{what}: the hold must fit in the hook timeout"
+        );
+    }
+    let c = Config::from_toml_str(
+        r#"
+[[controllers]]
+name = "tac-mtp"
+match = "*ALPACA-LITE_MTP_DEBUG_BOARD*"
+controls = "*ALPACA-LITE_MTP_DEBUG_BOARD*"
+boot_mode = "conminer tac-power mode {mode} --fastboot-hold-ms {fastboot_hold_ms} --device {device}"
+fastboot_hold_ms = 14000
+"#,
+    )
+    .unwrap();
+    let mtp = c.controllers.iter().find(|c| c.name == "tac-mtp").unwrap();
+    assert_eq!(mtp.fastboot_hold_ms, 14_000);
+}
+
 /// The same trap, for the TAC: one FT4232H is BOTH the board's two consoles and
 /// the GPIO that powers it. `exclude_from_discovery` defaults to true, so
 /// getting this wrong would make a working controller delete the pair of UARTs

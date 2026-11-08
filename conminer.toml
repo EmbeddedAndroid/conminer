@@ -305,6 +305,23 @@ power_timeout_s = 60                  # UEFI holds 8s after a 1.5s off
 off_settle_s = 1.5                    # rail collapse, not a PMIC long-press
 exclude_from_discovery = false
 
+[[controllers]]
+name = "tac-mtp"                      # Alpaca-lite on an MTP (TAC_FTDI_13.tcnf)
+# Same FT4232H split as the RIDE TAC, different wiring: off cuts the battery and
+# both VBUS feeds, on restores them and presses the power key. No sense line.
+match = "*ALPACA-LITE_MTP_DEBUG_BOARD*"
+controls = "*ALPACA-LITE_MTP_DEBUG_BOARD*"
+power = "conminer tac-power {action} --settle {off_settle} --device {device}"
+boot_mode = "conminer tac-power mode {mode} --fastboot-hold-ms {fastboot_hold_ms} --device {device}"
+power_state = "conminer tac-power power-state --device {device}"
+boot_modes = ["EDL", "UEFI", "FASTBOOT", "EUD", "USB_OFF", "USB_ON"]
+line_modes = ["USB_OFF", "USB_ON"]
+mode_enters_immediately = true
+power_timeout_s = 60                  # UEFI holds the power key 20s
+off_settle_s = 1.5                    # added to the vendor's 500ms off-time
+fastboot_hold_ms = 10000              # FASTBOOT: volume down held this long after the power-key release
+exclude_from_discovery = false
+
 # Vendor .tcnf configs for TAC boards this build has no pin map for can be
 # dropped in /etc/conminer/tac.d/*.tcnf; the pins are read from the JSON and the
 # strap sequences are the ones implemented natively (the file's `script` block is

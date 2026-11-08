@@ -109,6 +109,10 @@ enum Cmd {
         /// collapse the vendor's own sequences wait 1.5s for).
         #[arg(long, default_value_t = 1.5)]
         settle: f64,
+        /// MTP FASTBOOT: milliseconds volume down stays held after the
+        /// power-key release, so a late-reading boot loader still sees it.
+        #[arg(long, default_value_t = conminer_core::tac::MTP_FASTBOOT_HOLD_MS)]
+        fastboot_hold_ms: u64,
         /// Target a specific TAC when several are attached.
         #[arg(long, default_value = "")]
         serial: String,
@@ -314,11 +318,20 @@ fn main() -> Result<()> {
             action,
             arg,
             settle,
+            fastboot_hold_ms,
             serial,
             device,
             dry_run,
         } => {
-            return tac::run(action, arg, *settle, serial, device, *dry_run);
+            return tac::run(
+                action,
+                arg,
+                *settle,
+                *fastboot_hold_ms,
+                serial,
+                device,
+                *dry_run,
+            );
         }
         Cmd::Healthcheck { service } => {
             return service::healthcheck(&cli.config, &cli.data, service)

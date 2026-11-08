@@ -60,11 +60,28 @@ impl PinRef {
     }
 }
 
+/// Which vendor sequence set a board's pins are driven by.
+///
+/// The two TAC configs seen so far wire power differently, and their scripts
+/// differ with it. A RIDE board is held off by one load-switch level
+/// (`pwr_off`). An MTP on the Alpaca-lite cuts its battery and both VBUS feeds
+/// to go off, and only comes up from a power-key press once they are restored.
+/// Mapping one family's pin names onto the other's sequences would drive the
+/// wrong lines, so the family is part of the profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TacFamily {
+    /// `pwr_off` / `sw_dnld` / `ss_force_edl`: `TAC_FTDI_37.tcnf`.
+    Ride,
+    /// `battery` / `pkey` / `pedl` behind `TC_READY_N`: `TAC_FTDI_13.tcnf`.
+    Mtp,
+}
+
 /// What a TAC config says about one board type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TacProfile {
     /// The USB product descriptor this matches, e.g. `RIDE MICRO 4.0`.
     pub usb_descriptor: String,
+    pub family: TacFamily,
     /// Channels configured as GPIO rather than UART.
     pub gpio_buses: Vec<char>,
     /// Command name -> pin. Names are the vendor's (`pwr_off`, `sw_dnld`, …).
@@ -95,7 +112,60 @@ impl TacProfile {
     /// Deliberately only what has been read off real hardware. A TAC config for
     /// another board is a drop-in (`from_tcnf`), not a guess made here.
     pub fn builtin() -> Vec<TacProfile> {
-        vec![TacProfile::ride_micro_4_0()]
+        vec![TacProfile::ride_micro_4_0(), TacProfile::alpaca_lite_mtp()]
+    }
+
+    /// `TAC_FTDI_13.tcnf`, transcribed: the config the vendor's pytac falls
+    /// back to for any FTDI Alpaca-lite, and the one this product drives.
+    /// Buses A and B are UARTs, C and D GPIO. The file's own `usb_descriptor`
+    /// is empty, which is why this cannot simply be dropped in as a `.tcnf`.
+    ///
+    /// Levels are written exactly as the vendor script states them: pytac
+    /// ignores the config's `inverted` flags, so `battery 1` drives D1 high,
+    /// and that is "battery disconnected".
+    fn alpaca_lite_mtp() -> TacProfile {
+        let pins = [
+            ("pshold", 'C', 0),
+            ("uim1", 'C', 1),
+            ("headset", 'C', 2),
+            ("uim2", 'C', 3),
+            ("sdcard", 'C', 4),
+            // Secondary-SoC (Fusion) EDL and PM_RESIN_N: present on the board,
+            // used by no sequence here.
+            ("sedl", 'C', 5),
+            ("usb1", 'C', 6),
+            ("sresn", 'C', 7),
+            ("volup", 'D', 0),
+            ("battery", 'D', 1),
+            ("voldn", 'D', 2),
+            ("pkey", 'D', 3),
+            ("eud", 'D', 4),
+            ("pedl", 'D', 5),
+            ("TC_READY_N", 'D', 6),
+            ("usb0", 'D', 7),
+        ];
+        TacProfile {
+            usb_descriptor: "ALPACA-LITE MTP DEBUG BOARD".into(),
+            family: TacFamily::Mtp,
+            gpio_buses: vec!['C', 'D'],
+            // The config has no feedback line: power-state can only report
+            // what was commanded.
+            sense: None,
+            pins: pins
+                .into_iter()
+                .map(|(n, bus, bit)| (n.to_string(), PinRef { bus, bit }))
+                .collect(),
+            inputs: Vec::new(),
+        }
+    }
+
+    /// The pin whose level says whether power was last commanded off, and
+    /// that level.
+    pub fn power_off_pin(&self) -> (&'static str, bool) {
+        match self.family {
+            TacFamily::Ride => ("pwr_off", true),
+            TacFamily::Mtp => ("battery", true),
+        }
     }
 
     /// `TAC_FTDI_37.tcnf`, transcribed. `chip1BusSet: 12` = buses C and D.
@@ -123,6 +193,7 @@ impl TacProfile {
         ];
         TacProfile {
             usb_descriptor: "RIDE MICRO 4.0".into(),
+            family: TacFamily::Ride,
             gpio_buses: vec!['C', 'D'],
             sense: Some("md_resout".into()),
             pins: pins
@@ -200,8 +271,14 @@ impl TacProfile {
             .contains_key("md_resout")
             .then(|| "md_resout".to_string());
         let inputs = sense.clone().into_iter().collect();
+        let family = if pins.contains_key("battery") && pins.contains_key("pkey") {
+            TacFamily::Mtp
+        } else {
+            TacFamily::Ride
+        };
         Ok(TacProfile {
             usb_descriptor,
+            family,
             gpio_buses,
             sense,
             pins,
@@ -324,6 +401,14 @@ pub enum Action {
     SailEdl,
     Uefi,
     Fastboot,
+    /// Boot with the EUD enable line held, so the early boot loader turns on
+    /// the Embedded USB Debugger itself. MTP only.
+    Eud,
+    /// Cut / restore the board's two USB VBUS feeds while it stays powered, so
+    /// the USB controller sees a disconnect (suspend refuses with a host
+    /// attached). MTP only; no boot.
+    UsbOff,
+    UsbOn,
     /// Release every strap without touching power.
     Clear,
 }
@@ -338,6 +423,9 @@ impl Action {
             "SAIL_EDL" => Action::SailEdl,
             "UEFI" => Action::Uefi,
             "FASTBOOT" => Action::Fastboot,
+            "EUD" => Action::Eud,
+            "USB_OFF" => Action::UsbOff,
+            "USB_ON" => Action::UsbOn,
             "CLEAR" | "NONE" | "NORMAL" => Action::Clear,
             _ => return None,
         })
@@ -352,6 +440,9 @@ impl Action {
             Action::SailEdl => "SAIL_EDL",
             Action::Uefi => "UEFI",
             Action::Fastboot => "FASTBOOT",
+            Action::Eud => "EUD",
+            Action::UsbOff => "USB_OFF",
+            Action::UsbOn => "USB_ON",
             Action::Clear => "clear",
         }
     }
@@ -392,6 +483,24 @@ pub enum Step {
 /// `settle_ms` replaces the vendor's fixed 1500 ms off-time so a board that
 /// needs longer can be configured without editing this.
 pub fn sequence(profile: &TacProfile, action: Action, settle_ms: u64) -> Result<Vec<Step>> {
+    sequence_timed(profile, action, settle_ms, MTP_FASTBOOT_HOLD_MS)
+}
+
+/// How long an MTP FASTBOOT entry keeps volume down held after the power-key
+/// release, unless the controller profile says otherwise.
+pub const MTP_FASTBOOT_HOLD_MS: u64 = 10_000;
+
+/// [`sequence`] with the MTP's FASTBOOT hold given explicitly. RIDE boards
+/// select fastboot with a strap, not a key, and ignore it.
+pub fn sequence_timed(
+    profile: &TacProfile,
+    action: Action,
+    settle_ms: u64,
+    fastboot_hold_ms: u64,
+) -> Result<Vec<Step>> {
+    if profile.family == TacFamily::Mtp {
+        return mtp_sequence(profile, action, settle_ms, fastboot_hold_ms);
+    }
     let need = |name: &'static str| -> Result<()> {
         if profile.pins.contains_key(name) {
             Ok(())
@@ -480,6 +589,16 @@ pub fn sequence(profile: &TacProfile, action: Action, settle_ms: u64) -> Result<
                 Step::Set("usb2", false),
             ]
         }
+        Action::Eud | Action::UsbOff | Action::UsbOn => {
+            return Err(ToolError::new(
+                ErrorCode::HookNotConfigured,
+                format!(
+                    "{} is only defined for the MTP Alpaca-lite, not {}",
+                    action.as_str(),
+                    profile.usb_descriptor
+                ),
+            ))
+        }
         Action::Clear => {
             // Every strap low, power untouched. A latched strap is a trap: the
             // sequences above release their own, but an interrupted one (a hook
@@ -494,13 +613,221 @@ pub fn sequence(profile: &TacProfile, action: Action, settle_ms: u64) -> Result<
     Ok(steps)
 }
 
+/// The MTP Alpaca-lite's `script` block, natively.
+///
+/// TRANSCRIBED, NOT INVENTED. From `TAC_FTDI_13.tcnf` (timing variables at
+/// their defaults: `edl` 1300, `uefi` 20000, `fastboot` 1000):
+///
+/// ```text
+/// def powerOffTheDevice() battery 1; usb0 1; usb1 1
+/// def powerOnTheDevice()  delay 500; battery 0; delay 900; usb0 0; usb1 0; delay 30
+/// def powerOff()  powerOffTheDevice; pkey 0; volup 0; voldn 0; pedl 0
+/// def powerOn()   powerOff; powerOnTheDevice; pkey 1; delay 800; pkey 0
+/// def bootToEDL() powerOffTheDevice; pkey 0; volup 0; voldn 0; pedl 1;
+///                 powerOnTheDevice; pkey 1; delay $edl; pkey 0; pedl 0
+/// def bootToUEFI() powerOffTheDevice; pkey 0; volup 1; voldn 0; pedl 0;
+///                 powerOnTheDevice; pkey 1; delay $uefi; pkey 0; volup 0;
+///                 delay 12; pkey 1; volup 1; pkey 0; volup 0
+/// def bootToFastboot() powerOffTheDevice; pkey 0; volup 0; voldn 1; pedl 0;
+///                 powerOnTheDevice; pkey 1; delay 800; pkey 0;
+///                 delay $fastboot; voldn 0; delay 30; voldn 1; voldn 0
+/// ```
+///
+/// Three departures. The first two are about getting the levels onto the
+/// board safely:
+///
+/// - `TC_READY_N` gates the board-side outputs ("SW must program it to 1 to
+///   enable some output signals"). The vendor tool sets it at startup along
+///   with every other initial value, which is what powers a board on the
+///   moment the tool opens. Here it is set inside each sequence, right after
+///   the power-off levels, so the first thing the board sees is "off".
+/// - `settle_ms` is added to the vendor's 500 ms off-time, as the RIDE
+///   sequences do, so a slow rail can be given longer without editing this.
+///
+/// The third is FASTBOOT's volume-down hold. The vendor script releases the
+/// key 1.8 s after the power-key press, which suits a boot loader that reads
+/// it that early. U-Boot reads it only after its storage and USB scans, about
+/// 5 to 6 s after the power-key release on the board this was measured on,
+/// and missed the key every time. So the key is held `fastboot_hold_ms` past
+/// the release and then let go, without the vendor's closing re-press: a
+/// level is all the reader needs.
+///
+/// `sedl` (secondary-SoC EDL) is not exposed: it is the Fusion modem's strap,
+/// and EDL here means the application processor.
+fn mtp_sequence(
+    profile: &TacProfile,
+    action: Action,
+    settle_ms: u64,
+    fastboot_hold_ms: u64,
+) -> Result<Vec<Step>> {
+    for name in [
+        "battery",
+        "usb0",
+        "usb1",
+        "pkey",
+        "volup",
+        "voldn",
+        "pedl",
+        "TC_READY_N",
+    ] {
+        if !profile.pins.contains_key(name) {
+            return Err(ToolError::new(
+                ErrorCode::HookNotConfigured,
+                format!(
+                    "this TAC board ({}) has no {name:?} pin, so it cannot do that",
+                    profile.usb_descriptor
+                ),
+            )
+            .with_hint("the board's TAC config decides which actions exist"));
+        }
+    }
+    // powerOffTheDevice, then the output enable.
+    let off = || {
+        vec![
+            Step::Set("battery", true),
+            Step::Set("usb0", true),
+            Step::Set("usb1", true),
+            Step::Set("TC_READY_N", true),
+        ]
+    };
+    // The EUD line is only ever held for a boot asked for with `EUD`; every
+    // other power-on releases it, so it never leaks into a normal boot.
+    let has_eud = profile.pins.contains_key("eud");
+    let buttons = |volup: bool, voldn: bool, pedl: bool| {
+        let mut v = vec![
+            Step::Set("pkey", false),
+            Step::Set("volup", volup),
+            Step::Set("voldn", voldn),
+            Step::Set("pedl", pedl),
+        ];
+        if has_eud {
+            v.push(Step::Set("eud", false));
+        }
+        v
+    };
+    let on = || {
+        vec![
+            Step::Delay(500 + settle_ms),
+            Step::Set("battery", false),
+            Step::Delay(900),
+            Step::Set("usb0", false),
+            Step::Set("usb1", false),
+            Step::Delay(30),
+        ]
+    };
+    let press = |hold_ms: u64| {
+        vec![
+            Step::Set("pkey", true),
+            Step::Delay(hold_ms),
+            Step::Set("pkey", false),
+        ]
+    };
+    let steps: Vec<Step> = match action {
+        Action::Off => [off(), buttons(false, false, false)].concat(),
+        Action::On | Action::Cycle => {
+            [off(), buttons(false, false, false), on(), press(800)].concat()
+        }
+        Action::Edl => [
+            off(),
+            buttons(false, false, true),
+            on(),
+            press(1300),
+            vec![Step::Set("pedl", false)],
+        ]
+        .concat(),
+        Action::Uefi => [
+            off(),
+            buttons(true, false, false),
+            on(),
+            vec![
+                Step::Set("pkey", true),
+                Step::Delay(20000),
+                Step::Set("pkey", false),
+                Step::Set("volup", false),
+                Step::Delay(12),
+                Step::Set("pkey", true),
+                Step::Set("volup", true),
+                Step::Set("pkey", false),
+                Step::Set("volup", false),
+            ],
+        ]
+        .concat(),
+        Action::Fastboot => [
+            off(),
+            buttons(false, true, false),
+            on(),
+            press(800),
+            vec![Step::Delay(fastboot_hold_ms), Step::Set("voldn", false)],
+        ]
+        .concat(),
+        Action::SailEdl => {
+            return Err(ToolError::new(
+                ErrorCode::HookNotConfigured,
+                format!(
+                    "this TAC board ({}) has no SAIL domain; its secondary EDL strap is \
+                     the Fusion modem's",
+                    profile.usb_descriptor
+                ),
+            ))
+        }
+        Action::Eud => {
+            if !has_eud {
+                return Err(ToolError::new(
+                    ErrorCode::HookNotConfigured,
+                    format!(
+                        "this TAC board ({}) has no \"eud\" pin",
+                        profile.usb_descriptor
+                    ),
+                ));
+            }
+            // Not in the vendor script, which never drives this pin. Held from
+            // before power-on and left held: the loader samples it during
+            // boot, and `clear` or the next power action releases it.
+            [
+                off(),
+                buttons(false, false, false),
+                vec![Step::Set("eud", true)],
+                on(),
+                press(800),
+            ]
+            .concat()
+        }
+        // Only the VBUS feeds move: `battery` keeps the board running.
+        Action::UsbOff => vec![
+            Step::Set("usb0", true),
+            Step::Set("usb1", true),
+            Step::Set("TC_READY_N", true),
+        ],
+        Action::UsbOn => vec![
+            Step::Set("usb0", false),
+            Step::Set("usb1", false),
+            Step::Set("TC_READY_N", true),
+        ],
+        // Every strap and button released, power untouched.
+        Action::Clear => ["pedl", "volup", "voldn", "pkey", "eud"]
+            .into_iter()
+            .filter(|n| *n != "eud" || has_eud)
+            .map(|n| Step::Set(n, false))
+            .collect(),
+    };
+    Ok(steps)
+}
+
 /// Boot modes a profile can actually select, for the controller config.
 pub fn boot_modes(profile: &TacProfile) -> Vec<String> {
-    [Action::Edl, Action::SailEdl, Action::Uefi, Action::Fastboot]
-        .into_iter()
-        .filter(|a| sequence(profile, *a, 1500).is_ok())
-        .map(|a| a.as_str().to_string())
-        .collect()
+    [
+        Action::Edl,
+        Action::SailEdl,
+        Action::Uefi,
+        Action::Fastboot,
+        Action::Eud,
+        Action::UsbOff,
+        Action::UsbOn,
+    ]
+    .into_iter()
+    .filter(|a| sequence(profile, *a, 1500).is_ok())
+    .map(|a| a.as_str().to_string())
+    .collect()
 }
 
 /// Somewhere pins can be driven. Split out so sequences are testable without a
@@ -873,6 +1200,15 @@ fn bad_config(msg: String) -> ToolError {
 mod tests {
     use super::*;
 
+    impl Step {
+        /// `Step::Set` with an owned-looking name, for comparisons in tests.
+        #[allow(non_snake_case)]
+        fn Set_(name: &str, v: bool) -> Step {
+            let name: &'static str = Box::leak(name.to_string().into_boxed_str());
+            Step::Set(name, v)
+        }
+    }
+
     fn steps_of(action: Action) -> Vec<(String, bool)> {
         let p = TacProfile::ride_micro_4_0();
         let mut sink = RecordingSink::default();
@@ -1058,6 +1394,309 @@ mod tests {
         ] {
             assert_eq!(gpio_channel_in(name, &profiles), expect, "{name}");
         }
+    }
+
+    fn mtp_steps(action: Action) -> Vec<Step> {
+        sequence(&TacProfile::alpaca_lite_mtp(), action, 1500).unwrap()
+    }
+
+    /// Wiring, transcribed from `TAC_FTDI_13.tcnf`.
+    #[test]
+    fn the_alpaca_lite_mtp_pin_map_matches_its_tac_config() {
+        let p = TacProfile::alpaca_lite_mtp();
+        assert_eq!(p.family, TacFamily::Mtp);
+        assert_eq!(p.usb_descriptor, "ALPACA-LITE MTP DEBUG BOARD");
+        assert_eq!(p.pin("battery"), Some(PinRef { bus: 'D', bit: 1 }));
+        assert_eq!(p.pin("pkey"), Some(PinRef { bus: 'D', bit: 3 }));
+        assert_eq!(p.pin("pedl"), Some(PinRef { bus: 'D', bit: 5 }));
+        assert_eq!(p.pin("TC_READY_N"), Some(PinRef { bus: 'D', bit: 6 }));
+        assert_eq!(p.pin("usb0"), Some(PinRef { bus: 'D', bit: 7 }));
+        assert_eq!(p.pin("usb1"), Some(PinRef { bus: 'C', bit: 6 }));
+        assert_eq!(p.pin("volup"), Some(PinRef { bus: 'D', bit: 0 }));
+        assert_eq!(p.pin("voldn"), Some(PinRef { bus: 'D', bit: 2 }));
+        assert_eq!(p.gpio_buses, vec!['C', 'D']);
+        assert_eq!(p.sense, None, "no feedback line in this config");
+        assert_eq!(p.direction('C'), 0xFF);
+        assert_eq!(p.direction('D'), 0xFF);
+        assert_eq!(p.power_off_pin(), ("battery", true));
+    }
+
+    /// Off cuts the battery and both VBUS feeds BEFORE the output enable, so
+    /// the first level the board ever sees from us is "off".
+    #[test]
+    fn mtp_off_cuts_power_before_enabling_the_outputs() {
+        let s = mtp_steps(Action::Off);
+        let pos = |n: &str, v: bool| s.iter().position(|x| *x == Step::Set_(n, v)).unwrap();
+        assert!(pos("battery", true) < pos("TC_READY_N", true), "{s:?}");
+        assert!(pos("usb0", true) < pos("TC_READY_N", true), "{s:?}");
+        assert!(pos("usb1", true) < pos("TC_READY_N", true), "{s:?}");
+        assert!(
+            !s.iter().any(|x| *x == Step::Set_("battery", false)),
+            "off must never restore the battery: {s:?}"
+        );
+    }
+
+    #[test]
+    fn mtp_on_restores_power_then_presses_the_power_key() {
+        let s = mtp_steps(Action::On);
+        let pos = |x: Step| s.iter().position(|y| *y == x).unwrap();
+        assert!(pos(Step::Set_("battery", false)) < pos(Step::Set_("pkey", true)));
+        assert!(pos(Step::Set_("usb0", false)) < pos(Step::Set_("pkey", true)));
+        assert_eq!(
+            s.last(),
+            Some(&Step::Set_("pkey", false)),
+            "the key is released"
+        );
+        assert!(s.contains(&Step::Delay(800)), "the vendor's 800 ms press");
+        assert!(
+            s.contains(&Step::Delay(2000)),
+            "500 ms vendor off-time + settle"
+        );
+    }
+
+    /// EDL straps before the rail comes back and releases only after the
+    /// press: the order the vendor script uses.
+    #[test]
+    fn mtp_edl_straps_before_power_and_releases_after_the_press() {
+        let s = mtp_steps(Action::Edl);
+        let pos = |x: Step| s.iter().position(|y| *y == x).unwrap();
+        assert!(pos(Step::Set_("pedl", true)) < pos(Step::Set_("battery", false)));
+        assert!(pos(Step::Set_("pkey", false)) < pos(Step::Set_("pedl", false)));
+        assert!(s.contains(&Step::Delay(1300)), "the config's EDL timing");
+        assert_eq!(s.last(), Some(&Step::Set_("pedl", false)));
+    }
+
+    /// EUD holds its line from before power-on through the end of the
+    /// sequence; any other power-on and `clear` release it.
+    #[test]
+    fn mtp_eud_holds_its_line_across_power_on_and_nothing_else_does() {
+        let s = mtp_steps(Action::Eud);
+        let pos = |x: Step| s.iter().position(|y| *y == x).unwrap();
+        assert!(pos(Step::Set_("eud", true)) < pos(Step::Set_("battery", false)));
+        assert!(!s[pos(Step::Set_("eud", true))..].contains(&Step::Set_("eud", false)));
+        assert!(
+            s.contains(&Step::Set_("pkey", true)),
+            "it must power the board on"
+        );
+        for a in [
+            Action::On,
+            Action::Cycle,
+            Action::Edl,
+            Action::Uefi,
+            Action::Fastboot,
+        ] {
+            let s = mtp_steps(a);
+            assert!(
+                s.contains(&Step::Set_("eud", false)),
+                "{a:?} must release EUD"
+            );
+            assert!(
+                !s.contains(&Step::Set_("eud", true)),
+                "{a:?} must not assert EUD"
+            );
+        }
+        assert!(mtp_steps(Action::Clear).contains(&Step::Set_("eud", false)));
+        let ride = TacProfile::ride_micro_4_0();
+        assert_eq!(
+            sequence(&ride, Action::Eud, 1500).unwrap_err().code,
+            ErrorCode::HookNotConfigured
+        );
+        assert!(!boot_modes(&ride).contains(&"EUD".to_string()));
+    }
+
+    /// USB_OFF/USB_ON move only the two VBUS feeds: the battery line, which
+    /// keeps the board running, is never touched, and nothing is pressed.
+    #[test]
+    fn mtp_usb_off_and_on_touch_only_the_vbus_feeds() {
+        for (a, level) in [(Action::UsbOff, true), (Action::UsbOn, false)] {
+            let s = mtp_steps(a);
+            assert!(s.contains(&Step::Set_("usb0", level)), "{a:?}: {s:?}");
+            assert!(s.contains(&Step::Set_("usb1", level)), "{a:?}: {s:?}");
+            assert!(
+                !s.iter().any(|x| matches!(
+                    x,
+                    Step::Set("battery" | "pkey" | "pedl" | "volup" | "voldn" | "eud", _)
+                        | Step::Delay(_)
+                )),
+                "{a:?} must not touch power, buttons or straps: {s:?}"
+            );
+        }
+        let ride = TacProfile::ride_micro_4_0();
+        for a in [Action::UsbOff, Action::UsbOn] {
+            assert_eq!(
+                sequence(&ride, a, 1500).unwrap_err().code,
+                ErrorCode::HookNotConfigured
+            );
+        }
+    }
+
+    /// A fake FTDI: every level change stamped with a virtual clock that only
+    /// the sequence's own delays advance.
+    #[derive(Default)]
+    struct FakeFtdi {
+        now_ms: u64,
+        events: Vec<(u64, String, bool)>,
+    }
+
+    impl PinSink for FakeFtdi {
+        fn set(&mut self, name: &str, value: bool) -> Result<()> {
+            self.events.push((self.now_ms, name.to_string(), value));
+            Ok(())
+        }
+        fn delay(&mut self, ms: u64) {
+            self.now_ms += ms;
+        }
+    }
+
+    impl FakeFtdi {
+        fn run(action: Action, hold_ms: u64) -> FakeFtdi {
+            let mut f = FakeFtdi::default();
+            let steps =
+                sequence_timed(&TacProfile::alpaca_lite_mtp(), action, 1500, hold_ms).unwrap();
+            run_sequence(&mut f, &steps).unwrap();
+            f
+        }
+
+        /// The times `pin` was driven to `level`.
+        fn at(&self, pin: &str, level: bool) -> Vec<u64> {
+            self.events
+                .iter()
+                .filter(|(_, n, v)| n == pin && *v == level)
+                .map(|(t, _, _)| *t)
+                .collect()
+        }
+    }
+
+    /// FASTBOOT holds volume down from before power-on until `hold_ms` after
+    /// the power-key release, then lets go once: U-Boot reads the key about 5
+    /// to 6 s after the release, long after the vendor's 1.8 s.
+    #[test]
+    fn mtp_fastboot_holds_volume_down_for_the_configured_time_after_the_key() {
+        for hold in [crate::tac::MTP_FASTBOOT_HOLD_MS, 4_000] {
+            let f = FakeFtdi::run(Action::Fastboot, hold);
+            let press = f.at("pkey", true);
+            let release = f.at("pkey", false);
+            let down = f.at("voldn", true);
+            let up = f.at("voldn", false);
+            assert_eq!(press.len(), 1, "one power-key press: {:?}", f.events);
+            assert_eq!(down.len(), 1, "volume down pressed once: {:?}", f.events);
+            assert_eq!(
+                up.len(),
+                1,
+                "and released once, no re-press: {:?}",
+                f.events
+            );
+            let key_up = *release.last().unwrap();
+            assert_eq!(key_up - press[0], 800, "the vendor's 800 ms press");
+            assert!(
+                down[0] <= f.at("battery", false)[0],
+                "held before the battery is restored"
+            );
+            assert_eq!(up[0] - key_up, hold, "released {hold} ms after the key");
+            assert_eq!(
+                f.events.last().map(|(_, n, v)| (n.as_str(), *v)),
+                Some(("voldn", false)),
+                "the release is the last thing the sequence does"
+            );
+            // 500 ms vendor off-time + 1500 settle + 900 + 30, then the press.
+            assert_eq!(press[0], 2_930);
+            assert_eq!(f.now_ms, 2_930 + 800 + hold);
+        }
+    }
+
+    /// The hold is the MTP's: the RIDE selects fastboot with its `usb2` strap
+    /// and its sequence does not change with it.
+    #[test]
+    fn the_fastboot_hold_does_not_touch_the_ride_sequence() {
+        let ride = TacProfile::ride_micro_4_0();
+        assert_eq!(
+            sequence_timed(&ride, Action::Fastboot, 1500, 1).unwrap(),
+            sequence_timed(&ride, Action::Fastboot, 1500, 50_000).unwrap()
+        );
+    }
+
+    #[test]
+    fn mtp_modes_and_refusals() {
+        let p = TacProfile::alpaca_lite_mtp();
+        assert_eq!(
+            boot_modes(&p),
+            vec!["EDL", "UEFI", "FASTBOOT", "EUD", "USB_OFF", "USB_ON"]
+        );
+        let e = sequence(&p, Action::SailEdl, 1500).unwrap_err();
+        assert_eq!(e.code, ErrorCode::HookNotConfigured);
+        let clear = mtp_steps(Action::Clear);
+        assert!(
+            clear.iter().all(|x| matches!(x, Step::Set(_, false))),
+            "{clear:?}"
+        );
+        assert!(
+            !clear
+                .iter()
+                .any(|x| matches!(x, Step::Set("battery" | "usb0" | "usb1", _))),
+            "clearing must not touch power: {clear:?}"
+        );
+        // Every sequence leaves every button and strap released.
+        for a in [
+            Action::On,
+            Action::Cycle,
+            Action::Edl,
+            Action::Uefi,
+            Action::Fastboot,
+        ] {
+            let mut sink = RecordingSink::default();
+            run_sequence(&mut sink, &mtp_steps(a)).unwrap();
+            for n in ["pkey", "volup", "voldn", "pedl"] {
+                let last = sink
+                    .steps
+                    .iter()
+                    .rev()
+                    .find(|(m, _)| m == n)
+                    .map(|(_, v)| *v);
+                assert_eq!(last, Some(false), "{a:?} leaves {n} held");
+            }
+        }
+    }
+
+    #[test]
+    fn the_mtp_tacs_gpio_channels_are_not_consoles() {
+        let profiles = TacProfile::builtin();
+        let n = "usb-FTDI_ALPACA-LITE_MTP_DEBUG_BOARD_FT0MTP01-if0";
+        assert_eq!(gpio_channel_in(&format!("{n}0-port0"), &profiles), None);
+        assert_eq!(gpio_channel_in(&format!("{n}1-port0"), &profiles), None);
+        assert_eq!(
+            gpio_channel_in(&format!("{n}2-port0"), &profiles),
+            Some('C')
+        );
+        assert_eq!(
+            gpio_channel_in(&format!("{n}3-port0"), &profiles),
+            Some('D')
+        );
+    }
+
+    /// A dropped-in config with the MTP pin names gets the MTP sequences.
+    #[test]
+    fn a_vendor_config_with_mtp_pins_is_an_mtp_board() {
+        let json = r#"{
+          "usb_descriptor": "ALPACA-LITE OTHER MTP",
+          "bus": [{"bus": "C", "bus_function": 2}, {"bus": "D", "bus_function": 2}],
+          "pins": [
+            {"bus": "C", "command": "usb1",       "pin_number": "6", "enabled": true},
+            {"bus": "D", "command": "volup",      "pin_number": "0", "enabled": true},
+            {"bus": "D", "command": "battery",    "pin_number": "1", "enabled": true},
+            {"bus": "D", "command": "voldn",      "pin_number": "2", "enabled": true},
+            {"bus": "D", "command": "pkey",       "pin_number": "3", "enabled": true},
+            {"bus": "D", "command": "pedl",       "pin_number": "5", "enabled": true},
+            {"bus": "D", "command": "TC_READY_N", "pin_number": "6", "enabled": true},
+            {"bus": "D", "command": "usb0",       "pin_number": "7", "enabled": true}
+          ]
+        }"#;
+        let p = TacProfile::from_tcnf(json).unwrap();
+        assert_eq!(p.family, TacFamily::Mtp);
+        assert_eq!(
+            boot_modes(&p),
+            vec!["EDL", "UEFI", "FASTBOOT", "USB_OFF", "USB_ON"],
+            "no eud pin, so no EUD; the VBUS feeds are there"
+        );
     }
 
     #[test]

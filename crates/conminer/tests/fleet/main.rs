@@ -2586,6 +2586,8 @@ fn the_published_controls_name_the_controller_that_drives_the_board() {
         off_settle_s: 0.0,
         exclude_from_discovery: true,
         mode_enters_immediately: false,
+        line_modes: Vec::new(),
+        fastboot_hold_ms: 10_000,
     }];
     let cfg = conminer_core::config::Config {
         controllers,

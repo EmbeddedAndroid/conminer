@@ -1050,6 +1050,16 @@ pub(crate) fn declared_usb_ports(ctx: &Context, d: &DeviceRow) -> Vec<String> {
     ports
 }
 
+/// `{fastboot_hold_ms}` for a boot-mode hook: the board's controller profile
+/// decides, and a hook from anywhere else gets the built-in default.
+fn fastboot_hold_ms(ctx: &Context, d: &DeviceRow) -> String {
+    ctx.config()
+        .controller_for(&d.canonical)
+        .map(|c| c.fastboot_hold_ms)
+        .unwrap_or(conminer_core::tac::MTP_FASTBOOT_HOLD_MS)
+        .to_string()
+}
+
 /// Is any of this board's own USB ports on the bus right now?
 ///
 /// A SYSFS PATH TEST, not a device open. `usb::scan()` opens every device on the
@@ -4335,27 +4345,42 @@ pub fn registry() -> &'static [Tool] {
                 // so naming a board permanently broke its power control.
                 let name = d.canonical.clone();
                 let controller = hook.controller.clone().unwrap_or_default();
+                let hold = fastboot_hold_ms(ctx, &d);
                 let args = [
                     ("mode", mode),
                     ("device", name.as_str()),
                     ("controller", controller.as_str()),
+                    ("fastboot_hold_ms", hold.as_str()),
                 ];
 
                 // §F5: a strap is exactly the thing to check before setting it.
                 // Latched straps persist across boots, so a wrong mode is a trap
                 // that outlives the call that set it.
+                // A line mode switches something on a running board (the MTP's
+                // VBUS feeds): no boot happens, so no epoch opens.
+                let line_mode = !clearing
+                    && ctx
+                        .config()
+                        .controller_for(&d.canonical)
+                        .is_some_and(|c| c.line_modes.iter().any(|m| m == mode));
                 if flag(a, "dry_run") {
+                    let would_open: Vec<Value> = if line_mode {
+                        Vec::new()
+                    } else {
+                        scope.consoles.iter()
+                            .map(|c| json!({"device": c.display_name()}))
+                            .collect()
+                    };
                     return fresh(ctx, &d, json!({
                         "dry_run": true,
                         "mode": mode,
                         "release": releasing,
+                        "line_mode": line_mode,
                         "hook": {
                             "command": hooks::render(&hook.template, &args),
                             "timeout_s": timeout.as_secs(),
                         },
-                        "would_open_epochs": scope.consoles.iter()
-                            .map(|c| json!({"device": c.display_name()}))
-                            .collect::<Vec<_>>(),
+                        "would_open_epochs": would_open,
                         "target": scope.target,
                         "lease_check": scope.lease_check(),
                         "note": scope.note,
@@ -4372,6 +4397,17 @@ pub fn registry() -> &'static [Tool] {
                 let _in_flight = ctx.begin_actuation("boot_mode", &action, &scope.consoles)?;
                 let marks = stream_marks(ctx, &scope);
                 let result = block_on(hooks::run(&hook.template, &args, timeout))?;
+                if line_mode {
+                    return Ok(json!({
+                        "mode": mode,
+                        "line_mode": true,
+                        "hook": result,
+                        "boot": false,
+                        "note": "a line on the running board was switched; no boot epoch was \
+                                 opened. The opposite mode switches it back, and any power-on or \
+                                 boot mode restores the board's normal levels.",
+                    }));
+                }
 
                 let label = opt_s(a, "label").map(str::to_string)
                     .unwrap_or_else(|| format!("boot_mode {action}"));
@@ -4643,10 +4679,12 @@ pub fn registry() -> &'static [Tool] {
                 // Hooks get the canonical path, never the display name.
                 let name = d.canonical.clone();
                 let clear_controller = clear_hook.controller.clone().unwrap_or_default();
+                let hold = fastboot_hold_ms(ctx, &d);
                 let clear_args = [
                     ("mode", "clear"),
                     ("device", name.as_str()),
                     ("controller", clear_controller.as_str()),
+                    ("fastboot_hold_ms", hold.as_str()),
                 ];
 
                 if flag(a, "dry_run") {

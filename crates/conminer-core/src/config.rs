@@ -941,7 +941,8 @@ pub struct ControllerProfile {
     pub controls: String,
     /// `{action}`, `{device}`, `{controller}` and `{off_settle}` are substituted.
     pub power: Option<String>,
-    /// `{mode}`, `{device}`, `{controller}` are substituted.
+    /// `{mode}`, `{device}`, `{controller}` and `{fastboot_hold_ms}` are
+    /// substituted.
     pub boot_mode: Option<String>,
     /// Command that releases the ONE override `{mode}` holds, leaving the others
     /// as they are. Same substitutions as `boot_mode`.
@@ -1014,6 +1015,17 @@ pub struct ControllerProfile {
     /// step had undone the first.
     #[serde(default)]
     pub mode_enters_immediately: bool,
+    /// Entries of `boot_modes` that switch a line on a running board instead of
+    /// booting it (the MTP's USB VBUS feeds). `boot_mode` runs them without
+    /// opening a boot epoch, because nothing reboots.
+    #[serde(default)]
+    pub line_modes: Vec<String>,
+    /// How long a FASTBOOT entry keeps volume down held after the power-key
+    /// release, in ms, for a `boot_mode` hook that takes `{fastboot_hold_ms}`
+    /// (the MTP Alpaca-lite). The boot loader reads the key late, so this is a
+    /// board timing and tunable without a rebuild.
+    #[serde(default = "d_fastboot_hold_ms")]
+    pub fastboot_hold_ms: u64,
 }
 
 /// Shared glob test, so controller matching and the discovery include/exclude
@@ -1026,6 +1038,9 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 
 fn d_off_settle() -> f64 {
     6.0
+}
+fn d_fastboot_hold_ms() -> u64 {
+    crate::tac::MTP_FASTBOOT_HOLD_MS
 }
 fn d_true() -> bool {
     true
@@ -1468,6 +1483,8 @@ fn d_controllers() -> Vec<ControllerProfile> {
             // boot, so an entry is mode-then-reset and the strap needs clearing
             // afterwards.
             mode_enters_immediately: false,
+            line_modes: Vec::new(),
+            fastboot_hold_ms: d_fastboot_hold_ms(),
         },
         ControllerProfile {
             name: "bughopper".into(),
@@ -1498,6 +1515,8 @@ fn d_controllers() -> Vec<ControllerProfile> {
             // sampling window: setting the mode IS the entry. A reset afterwards
             // boots the board back out of EDL.
             mode_enters_immediately: true,
+            line_modes: Vec::new(),
+            fastboot_hold_ms: d_fastboot_hold_ms(),
             // Claiming the USB interface, holding PM_RESIN_N for 6s and settling
             // measures ~35s wall -- past the 30s global default, which made
             // `power off` and `cycle` unusable through MCP on this board.
@@ -1551,6 +1570,8 @@ fn d_controllers() -> Vec<ControllerProfile> {
             // releases across the sampling window: setting the mode IS the
             // entry, and a reset afterwards boots the board back out of it.
             mode_enters_immediately: true,
+            line_modes: Vec::new(),
+            fastboot_hold_ms: d_fastboot_hold_ms(),
             // The longest sequence (UEFI) holds for 8s after a 1.5s off, and
             // EDL for 5s; the 30s global default leaves no margin for the USB
             // claim on top.
@@ -1562,6 +1583,47 @@ fn d_controllers() -> Vec<ControllerProfile> {
             // Its GPIO channels never appear as ttys (they are claimed away from
             // ftdi_sio), and its UART channels are the consoles we are here to
             // serve. Excluding it would delete them.
+            exclude_from_discovery: false,
+        },
+        ControllerProfile {
+            name: "tac-mtp".into(),
+            // The Alpaca-lite on an MTP: the same FT4232H split, a different
+            // board wiring and a different vendor script (`TAC_FTDI_13.tcnf`).
+            // Power is the battery and both VBUS feeds plus a power-key press,
+            // not one load switch.
+            match_glob: "*ALPACA-LITE_MTP_DEBUG_BOARD*".into(),
+            controls: "*ALPACA-LITE_MTP_DEBUG_BOARD*".into(),
+            power: Some(
+                "conminer tac-power {action} --settle {off_settle} --device {device}".into(),
+            ),
+            boot_mode: Some(
+                "conminer tac-power mode {mode} --fastboot-hold-ms {fastboot_hold_ms} \
+                 --device {device}"
+                    .into(),
+            ),
+            // The config has no feedback line, so this answers "unknown" with
+            // the commanded state beside it.
+            power_state: Some("conminer tac-power power-state --device {device}".into()),
+            boot_overrides: None,
+            boot_mode_release: None,
+            flash: None,
+            boot_modes: vec![
+                "EDL".into(),
+                "UEFI".into(),
+                "FASTBOOT".into(),
+                "EUD".into(),
+                "USB_OFF".into(),
+                "USB_ON".into(),
+            ],
+            mode_enters_immediately: true,
+            line_modes: vec!["USB_OFF".into(), "USB_ON".into()],
+            fastboot_hold_ms: d_fastboot_hold_ms(),
+            // UEFI holds the power key for 20s after ~1.4s of power-up.
+            power_timeout_s: Some(60),
+            // Added to the vendor's own 500ms off-time.
+            off_settle_s: 1.5,
+            // Its UART channels are the consoles; its GPIO channels are kept
+            // out by the TAC catalogue, not by excluding the device.
             exclude_from_discovery: false,
         },
     ]
@@ -2712,6 +2774,8 @@ mod tests {
             off_settle_s: 6.0,
             exclude_from_discovery: true,
             mode_enters_immediately: false,
+            line_modes: Vec::new(),
+            fastboot_hold_ms: d_fastboot_hold_ms(),
         }]
     }
 
@@ -2842,6 +2906,8 @@ mod tests {
                 off_settle_s: 6.0,
                 exclude_from_discovery: false,
                 mode_enters_immediately: true,
+                line_modes: Vec::new(),
+                fastboot_hold_ms: d_fastboot_hold_ms(),
             }],
             ..Default::default()
         };

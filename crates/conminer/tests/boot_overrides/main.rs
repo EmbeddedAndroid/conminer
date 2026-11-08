@@ -148,6 +148,8 @@ impl Rig {
                 off_settle_s: 0.0,
                 exclude_from_discovery: true,
                 mode_enters_immediately: false,
+                line_modes: Vec::new(),
+                fastboot_hold_ms: 10_000,
             });
 
         let clock = Arc::new(conminer_core::clock::StepClock::default());

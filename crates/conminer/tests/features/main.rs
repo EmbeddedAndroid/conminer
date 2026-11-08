@@ -3452,6 +3452,8 @@ fn l5_console_state_on_a_board_the_controller_says_is_off_is_no_signal() {
             off_settle_s: 0.0,
             exclude_from_discovery: true,
             mode_enters_immediately: false,
+            line_modes: Vec::new(),
+            fastboot_hold_ms: 10_000,
         });
     let rig = Rig::with_config(cfg);
     let console = "/dev/serial/by-id/usb-Test_Board-if00-port0";
@@ -3852,6 +3854,8 @@ fn m1_a_login_gate_decays_when_the_board_goes_dark() {
             off_settle_s: 0.0,
             exclude_from_discovery: true,
             mode_enters_immediately: false,
+            line_modes: Vec::new(),
+            fastboot_hold_ms: 10_000,
         });
     let rig = Rig::with_config(cfg);
     let console = "/dev/serial/by-id/usb-M1_Board-if00-port0";
@@ -4255,6 +4259,8 @@ fn boot_mode_edl_does_not_answer_with_a_commandable_console() {
             // This controller sequences the entry itself: after this call the
             // board IS in EDL and its console has re-enumerated away.
             mode_enters_immediately: true,
+            line_modes: Vec::new(),
+            fastboot_hold_ms: 10_000,
         });
     let rig = Rig::with_config(cfg);
     let console = "/dev/serial/by-id/usb-Edl_Board-if00-port0";
@@ -4417,6 +4423,8 @@ fn cfg_with_slow_hook(seconds: u32) -> Config {
             off_settle_s: 0.0,
             exclude_from_discovery: true,
             mode_enters_immediately: false,
+            line_modes: Vec::new(),
+            fastboot_hold_ms: 10_000,
         });
     c
 }
