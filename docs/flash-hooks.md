@@ -42,8 +42,16 @@ timeout (`timeout_s`, default 540) stays below that, so qdl never outlives it.
 
 `flash {dry_run: true}` shows the hook argv without running it. The hook's
 own `--dry-run` runs qdl as `qdl --dry-run`, which validates the set and the
-programmer without USB traffic. `--check` verifies the board file and the
-stage's runtime and loaders against their manifests, without an image.
+programmer without USB traffic. It does not read the board, so it cannot tell
+whether a label exists. `--check` verifies the board file and the stage's
+runtime and loaders against their manifests, without an image. With
+`--gpt <dir>` it also checks every `kind` target against the board's own GPT:
+`<dir>` holds `lun<N>-gpt.bin` for each LUN the kinds name, as a `read` of
+`<N>/0+6` returns it.
+
+On a real flash qdl resolves every `<lun>/<label>` right after Firehose
+configure, before the first write, so a label the GPT lacks stops the run with
+`no partition "<label>" found on physical partition <N>` and nothing written.
 
 The caller owns the lease and the boot-mode transitions: put the board in EDL
 (or FASTBOOT for `fastboot-boot`) before the flash, and boot it afterwards.
@@ -134,9 +142,11 @@ take the next EDL entry mid-Sahara. One flash runs per stage at a time.
    and add it to `hooks/manifests/`; that is a source change and ships with the
    next deploy.
 2. Write the board file in `site.d/flash/`. Take the LUN and label of every
-   target from the board's own GPT (a `read` of `<lun>/0+6` per LUN) or its
-   stock rawprogram XML, never from another board of the same SoC: layouts
-   differ between boards.
+   target from the board's own GPT (a `read` of `<lun>/0+6` per LUN), never
+   from another board of the same SoC or from a flat build: layouts differ
+   between boards, and a flat build describes the layout it would create, not
+   the one the board has. Leave out a kind whose partition the board lacks, so
+   it is refused before qdl runs. Then run `--check --gpt <read dir>`.
 3. Wire the console's `flash` hook in a site file and restart (`./cm up`).
 4. Run `qdl-flash --board <file> --check` inside mcpd, then a `--dry-run`
    flash of a staged set, before the first real flash.

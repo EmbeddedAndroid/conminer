@@ -2,7 +2,7 @@
 # conminer flash hook for Qualcomm boards in EDL (Sahara + Firehose via qdl).
 #
 #   qdl-flash --board <board-file> [--dry-run] [--device <path>] <image-ref>
-#   qdl-flash --board <board-file> --check
+#   qdl-flash --board <board-file> --check [--gpt <dir>]
 #
 # One script for every board; what differs between boards (storage, LUN and
 # partition map, programmer, reset policy, accepted image references) lives in
@@ -50,6 +50,7 @@ die() { echo "$me: $*" >&2; exit 2; }
 board_file=
 dry=0
 check=0
+gpt_dir=
 device=
 ref=
 while (($#)); do
@@ -57,6 +58,7 @@ while (($#)); do
 	--board) board_file=${2:-}; shift 2 || die "--board needs a file" ;;
 	--dry-run) dry=1; shift ;;
 	--check) check=1; shift ;;
+	--gpt) gpt_dir=${2:-}; shift 2 || die "--gpt needs a directory" ;;
 	--device) device=${2:-}; shift 2 || die "--device needs a path" ;;
 	-*) die "unknown option $1" ;;
 	*) [[ -z "$ref" ]] || die "one image reference only"; ref=$1; shift ;;
@@ -173,13 +175,56 @@ verify_dir() {
 	(cd "$dir" && sha256sum -c --quiet --strict "$manifest") || die "$key in $dir does not match ${runtime_manifests[$key]}"
 }
 
+# The partition labels in lun<N>-gpt.bin, a read of <N>/0+6 or longer: the
+# protective MBR, the GPT header, then the entries it points at.
+gpt_labels() {
+	local f=$1 bs=${opt[sector_bytes]} lba n size i off len name
+	[[ "$(dd if="$f" bs=1 skip="$bs" count=8 status=none)" == "EFI PART" ]] || return 1
+	lba=$(od -An -t u8 -j $((bs + 72)) -N 8 "$f" | tr -d ' ')
+	n=$(od -An -t u4 -j $((bs + 80)) -N 4 "$f" | tr -d ' ')
+	size=$(od -An -t u4 -j $((bs + 84)) -N 4 "$f" | tr -d ' ')
+	len=$(stat -c %s "$f")
+	for ((i = 0; i < n; i++)); do
+		off=$((lba * bs + i * size))
+		((off + size <= len)) || break
+		name=$(dd if="$f" bs=1 skip=$((off + 56)) count=72 status=none | tr -d '\0')
+		[[ -z "$name" ]] || echo "$name"
+	done
+}
+
+# Every kind target must name a label on that LUN of the board's own GPT. A
+# board file copied from another board of the same SoC can carry a map that
+# board does not have, and qdl --dry-run never resolves labels, so only the
+# board's GPT can catch it.
+check_gpt() {
+	local bad=0 i t lun label f
+	declare -A seen=()
+	for i in "${!kind_targets[@]}"; do
+		for t in ${kind_targets[$i]}; do
+			lun=${t%%/*} label=${t#*/}
+			f="$gpt_dir/lun$lun-gpt.bin"
+			if [[ -z "${seen[$lun]+set}" ]]; then
+				[[ -f "$f" ]] || die "no GPT read of LUN $lun in $gpt_dir"
+				seen[$lun]=$(gpt_labels "$f") || die "$f holds no GPT"
+			fi
+			if ! grep -qxF -- "$label" <<< "${seen[$lun]}"; then
+				echo "$me: kind ${kind_names[$i]}: $t is not on this board's GPT" >&2
+				bad=1
+			fi
+		done
+	done
+	((bad == 0)) || exit 1
+}
+
 if ((check)); then
 	verify_dir runtime
 	[[ -z "${runtime_dirs[firehose]:-}" ]] || verify_dir firehose
 	[[ -z "${runtime_dirs[fastboot_runtime]:-}" ]] || verify_dir fastboot_runtime
+	[[ -z "$gpt_dir" ]] || check_gpt
 	echo "$me: $board_file ok"
 	exit 0
 fi
+[[ -z "$gpt_dir" ]] || die "--gpt goes with --check"
 
 # ------------------------------------------------------------ reference ----
 [[ -n "$ref" ]] || die "supply the staged image reference"

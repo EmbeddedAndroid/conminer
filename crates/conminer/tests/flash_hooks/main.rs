@@ -1360,3 +1360,101 @@ fn the_hook_is_executable() {
     let mode = std::fs::metadata(hook()).unwrap().permissions().mode();
     assert!(mode & 0o111 != 0, "hooks/qdl-flash must be executable");
 }
+
+// ----------------------------------------------------- board vs its GPT ----
+
+/// `lun<N>-gpt.bin` as a read of `<N>/0+6` returns it: protective MBR, header
+/// at sector 1, 128-byte entries from sector 2.
+fn gpt_dump(path: &Path, labels: &[&str]) {
+    const SS: usize = 4096;
+    let mut d = vec![0u8; 6 * SS];
+    d[SS..SS + 8].copy_from_slice(b"EFI PART");
+    d[SS + 72..SS + 80].copy_from_slice(&2u64.to_le_bytes());
+    d[SS + 80..SS + 84].copy_from_slice(&128u32.to_le_bytes());
+    d[SS + 84..SS + 88].copy_from_slice(&128u32.to_le_bytes());
+    for (i, name) in labels.iter().enumerate() {
+        let e = 2 * SS + i * 128;
+        d[e] = 0xa2; // any non-zero type GUID marks the entry used
+        for (j, u) in name.encode_utf16().enumerate() {
+            d[e + 56 + 2 * j..e + 58 + 2 * j].copy_from_slice(&u.to_le_bytes());
+        }
+    }
+    write(path, d);
+}
+
+/// The GPT of a board that splits its A/B slots over LUNs 4 and 5, with apdp
+/// on LUNs 1 and 2 and efi on LUN 0.
+fn split_lun_gpt(dir: &Path) {
+    gpt_dump(&dir.join("lun0-gpt.bin"), &["efi", "userdata"]);
+    gpt_dump(&dir.join("lun1-gpt.bin"), &["xbl_a", "apdp_a"]);
+    gpt_dump(&dir.join("lun2-gpt.bin"), &["xbl_b", "apdp_b"]);
+    gpt_dump(&dir.join("lun4-gpt.bin"), &["tz_a", "uefi_a", "uefi_dtb_a"]);
+    gpt_dump(&dir.join("lun5-gpt.bin"), &["tz_b", "uefi_b", "uefi_dtb_b"]);
+}
+
+#[test]
+fn a_board_map_that_matches_its_gpt_checks_clean() {
+    let rig = Rig::new(SAHARA, SPLIT_LUN_BOARD);
+    let gpt = rig.dir("READ-gpt");
+    split_lun_gpt(&gpt);
+    let o = rig.run(&["--check", "--gpt", gpt.to_str().unwrap()]);
+    ok(&o);
+}
+
+/// The regression: a board file copied from a board of the same SoC whose
+/// flat build keeps both slots on LUN 4 names B-slot and apdp targets this
+/// board does not have. qdl --dry-run never resolves labels, so only the
+/// board's own GPT catches it.
+#[test]
+fn a_board_map_copied_from_another_layout_fails_against_the_boards_gpt() {
+    let rig = Rig::new(SAHARA, ONE_LUN_BOARD);
+    let gpt = rig.dir("READ-gpt");
+    split_lun_gpt(&gpt);
+    let o = rig.run(&["--check", "--gpt", gpt.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o));
+    let s = said(&o);
+    for t in ["4/uefi_b", "4/tz_b", "4/apdp_a", "4/apdp_b", "4/uefi_dtb_b"] {
+        assert!(
+            s.contains(&format!("{t} is not on this board's GPT")),
+            "{t}: {s}"
+        );
+    }
+    for t in ["4/uefi_a ", "4/tz_a ", "0/efi "] {
+        assert!(!s.contains(t), "{t} is on the GPT: {s}");
+    }
+}
+
+#[test]
+fn a_kind_whose_partition_the_board_lacks_fails_the_gpt_check() {
+    let rig = Rig::new(SAHARA, SPLIT_LUN_BOARD);
+    let gpt = rig.dir("READ-gpt");
+    split_lun_gpt(&gpt);
+    gpt_dump(&gpt.join("lun0-gpt.bin"), &["lv_boot_a", "userdata"]);
+    let o = rig.run(&["--check", "--gpt", gpt.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o));
+    assert!(said(&o).contains("kind efi: 0/efi is not on this board's GPT"));
+}
+
+#[test]
+fn a_gpt_check_needs_a_read_of_every_lun_it_names() {
+    let rig = Rig::new(SAHARA, SPLIT_LUN_BOARD);
+    let gpt = rig.dir("READ-gpt");
+    split_lun_gpt(&gpt);
+    std::fs::remove_file(gpt.join("lun5-gpt.bin")).unwrap();
+    refused(
+        &rig,
+        &rig.run(&["--check", "--gpt", gpt.to_str().unwrap()]),
+        "no GPT read of LUN 5",
+    );
+    write(&gpt.join("lun5-gpt.bin"), vec![0u8; 6 * 4096]);
+    refused(
+        &rig,
+        &rig.run(&["--check", "--gpt", gpt.to_str().unwrap()]),
+        "holds no GPT",
+    );
+    refused(
+        &rig,
+        &rig.run(&["--gpt", gpt.to_str().unwrap(), "FP-260921-222651"]),
+        "--gpt goes with --check",
+    );
+}
