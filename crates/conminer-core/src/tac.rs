@@ -681,14 +681,23 @@ fn mtp_sequence(
             .with_hint("the board's TAC config decides which actions exist"));
         }
     }
-    // powerOffTheDevice, then the output enable.
+    // powerOffTheDevice, then the output enable. `pshold` forces the SoC's
+    // PS_HOLD high (vendor initial value: released). Held, it hides every
+    // PS_HOLD drop from the PMIC, so the board can never reset or power off
+    // by itself; it is released on every sequence rather than left at
+    // whatever level the channel last held.
+    let has_pshold = profile.pins.contains_key("pshold");
     let off = || {
-        vec![
+        let mut v = vec![
             Step::Set("battery", true),
             Step::Set("usb0", true),
             Step::Set("usb1", true),
             Step::Set("TC_READY_N", true),
-        ]
+        ];
+        if has_pshold {
+            v.push(Step::Set("pshold", false));
+        }
+        v
     };
     // The EUD line is only ever held for a boot asked for with `EUD`; every
     // other power-on releases it, so it never leaks into a normal boot.
@@ -1452,6 +1461,41 @@ mod tests {
             s.contains(&Step::Delay(2000)),
             "500 ms vendor off-time + settle"
         );
+    }
+
+    /// The PS_HOLD force is released by every sequence that switches power,
+    /// so a level left on the channel can never keep the PMIC from seeing a
+    /// PS_HOLD drop; nothing asserts it, and USB_OFF/USB_ON leave it alone.
+    #[test]
+    fn mtp_power_sequences_release_the_ps_hold_force() {
+        for a in [
+            Action::Off,
+            Action::On,
+            Action::Cycle,
+            Action::Edl,
+            Action::Uefi,
+            Action::Fastboot,
+            Action::Eud,
+        ] {
+            let s = mtp_steps(a);
+            let rel = s.iter().position(|x| *x == Step::Set_("pshold", false));
+            assert!(rel.is_some(), "{a:?} must release pshold: {s:?}");
+            assert!(
+                !s.contains(&Step::Set_("pshold", true)),
+                "{a:?} must never force PS_HOLD: {s:?}"
+            );
+            if let Some(on) = s.iter().position(|x| *x == Step::Set_("battery", false)) {
+                assert!(rel.unwrap() < on, "{a:?}: released before power returns");
+            }
+        }
+        for a in [Action::UsbOff, Action::UsbOn] {
+            assert!(
+                !mtp_steps(a)
+                    .iter()
+                    .any(|x| matches!(x, Step::Set("pshold", _))),
+                "{a:?} must not touch pshold"
+            );
+        }
     }
 
     /// EDL straps before the rail comes back and releases only after the

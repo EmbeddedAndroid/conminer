@@ -35,6 +35,10 @@ The two wire power differently, so each has its own sequence family:
   They are line modes: `boot_mode` runs them without opening a boot epoch
   (and its dry run lists no `would_open_epochs`), and any power-on or boot
   mode restores the normal levels.
+  `pshold` forces the SoC's PS_HOLD high (vendor initial value: released).
+  Held, it hides every PS_HOLD drop from the PMIC, so the board can never
+  reset or power off by itself; every sequence that switches power releases
+  it, and nothing asserts it.
 
 Sequences are transcribed from the vendor's `.tcnf` scripts, except the
 MTP's EUD mode, which the vendor script does not have, and the MTP's
