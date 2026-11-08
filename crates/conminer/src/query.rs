@@ -500,14 +500,18 @@ pub fn rebuild_templates(
 // ---------------------------------------------------------- operator tools --
 
 pub fn check_config(app: &App, out: &Writer, path: Option<&Path>) -> Result<()> {
-    let text = match path {
-        Some(p) => std::fs::read_to_string(p)?,
-        None => match std::env::var("CONMINER_CONFIG") {
-            Ok(p) if Path::new(&p).exists() => std::fs::read_to_string(p)?,
-            _ => String::new(),
-        },
+    let path = match path {
+        Some(p) => Some(p.to_path_buf()),
+        None => std::env::var("CONMINER_CONFIG")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.exists()),
     };
-    let problems = Config::check(&text)?;
+    // The file and the site files layered over it, as the services load them.
+    let problems = match path {
+        Some(p) => Config::check_path(&p)?,
+        None => Config::check("")?,
+    };
     let ok = problems.is_empty();
     out.emit(&json!({"ok": ok, "problems": problems}), || {
         if ok {

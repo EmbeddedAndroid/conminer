@@ -56,8 +56,9 @@ build_id() {
 # three hosts to a single name in one deploy, and every peer table then listed
 # what looked like duplicate registrations while the router had two candidates
 # for every actuation. `instance.json` is the same fact, persisted. The target
-# dirs and exports are the node's, and re-fetching them costs a rebuild.
-node_owned() { printf '%s\n' .env instance.json target-side target-docker exports .git; }
+# dirs and exports are the node's, and re-fetching them costs a rebuild. `site.d`
+# holds the node's own config layered over conminer.toml: its hooks and paths.
+node_owned() { printf '%s\n' .env instance.json site.d target-side target-docker exports .git; }
 
 # What must be REMOVED before unpacking. These are the files build-id hashes; a
 # stale one left behind changes the fingerprint while the source that produced it

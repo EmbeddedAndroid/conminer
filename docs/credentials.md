@@ -8,7 +8,10 @@ runs the command, in the same transaction.
 
 ## The file
 
-`conminer.toml` names the file; it is unset by default:
+The config names the file; it is unset by default. Which file, and whether a
+node has one at all, is that node's choice, so it goes in a site file
+(`site.d/*.toml`, see docs/operations.md) rather than the shared
+`conminer.toml`:
 
 ```toml
 [credentials]

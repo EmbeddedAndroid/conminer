@@ -947,3 +947,161 @@ fn every_strap_latching_controller_can_clear_its_straps() {
         "boot_mode must accept `clear` without it being a configured mode"
     );
 }
+
+// ------------------------------------------------------------ site files -----
+
+fn node_with(conminer_toml: &str, site: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("conminer.toml"), conminer_toml).unwrap();
+    if !site.is_empty() {
+        std::fs::create_dir(dir.path().join("site.d")).unwrap();
+    }
+    for (name, text) in site {
+        std::fs::write(dir.path().join("site.d").join(name), text).unwrap();
+    }
+    dir
+}
+
+const MTP: &str = "/dev/serial/by-id/usb-FTDI_ALPACA-LITE_MTP_DEBUG_BOARD_FT0MTP01-if00-port0";
+
+/// A node's own hooks and paths come from `site.d/*.toml` beside the shipped
+/// file, layered over it: the shipped file stays the compiled defaults and the
+/// same on every node, and the site file only names what it changes.
+#[test]
+fn site_files_layer_over_the_shipped_config() {
+    let shipped = include_str!("../../../../conminer.toml");
+    let site = format!(
+        "[credentials]\nfile = \"/var/lib/conminer/credentials.toml\"\n\n\
+         [devices.\"{MTP}\"]\nfastboot_serial_file = \"/exports/mtp/fastboot-serial\"\n\n\
+         [devices.\"{MTP}\".hooks]\nflash = \"/bin/sh /exports/mtp/flash.sh {{image}}\"\n"
+    );
+    let node = node_with(shipped, &[("node.toml", &site)]);
+    let c = Config::load(&node.path().join("conminer.toml")).unwrap();
+    assert_eq!(c.credentials.file, "/var/lib/conminer/credentials.toml");
+    assert_eq!(
+        c.fastboot_serial_file_for(&[MTP]).unwrap().to_str(),
+        Some("/exports/mtp/fastboot-serial")
+    );
+    assert!(c.devices.contains_key(MTP));
+    // Everything the site file does not name is the shipped file's.
+    let mut expected = shipped_config();
+    expected.credentials.file = c.credentials.file.clone();
+    expected.devices = c.devices.clone();
+    assert_eq!(c, expected);
+}
+
+/// The shipped file as `Config::load` sees it, which also applies the
+/// process's `CONMINER_*` environment.
+fn shipped_config() -> Config {
+    let mut c = Config::from_toml_str(include_str!("../../../../conminer.toml")).unwrap();
+    let env: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("CONMINER_"))
+        .collect();
+    c.apply_env(&env);
+    c
+}
+
+/// No site directory, or one holding only other files, is exactly the shipped
+/// file: a node that has no site config behaves as the repository says.
+#[test]
+fn without_site_files_the_config_is_the_file_alone() {
+    let shipped = include_str!("../../../../conminer.toml");
+    let bare = node_with(shipped, &[]);
+    assert_eq!(
+        Config::load(&bare.path().join("conminer.toml")).unwrap(),
+        shipped_config()
+    );
+    let other = node_with(
+        shipped,
+        &[
+            ("README.md", "[credentials]\nfile = \"/nope\"\n"),
+            ("flash-helper", "#!/bin/sh\n"),
+        ],
+    );
+    assert_eq!(
+        Config::load(&other.path().join("conminer.toml")).unwrap(),
+        shipped_config()
+    );
+}
+
+/// Site files apply in name order, so a later file overrides an earlier one.
+#[test]
+fn site_files_apply_in_name_order() {
+    let node = node_with(
+        "",
+        &[
+            ("20-late.toml", "[hooks]\npower_timeout_s = 45\n"),
+            (
+                "10-early.toml",
+                "[hooks]\npower_timeout_s = 40\nflash_timeout_s = 900\n",
+            ),
+        ],
+    );
+    let path = node.path().join("conminer.toml");
+    let names: Vec<_> = conminer_core::config::site_files(&path, None)
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["10-early.toml", "20-late.toml"]);
+    let c = Config::load(&path).unwrap();
+    assert_eq!(c.hooks.power_timeout_s, 45);
+    assert_eq!(c.hooks.flash_timeout_s, 900);
+}
+
+/// An explicit site directory replaces the one beside the file.
+#[test]
+fn an_explicit_site_dir_is_used_instead_of_the_one_beside_the_file() {
+    let node = node_with("", &[("a.toml", "")]);
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(elsewhere.path().join("b.toml"), "").unwrap();
+    let files = conminer_core::config::site_files(
+        &node.path().join("conminer.toml"),
+        Some(elsewhere.path()),
+    );
+    assert_eq!(files, vec![elsewhere.path().join("b.toml")]);
+    assert!(conminer_core::config::site_files(
+        &node.path().join("conminer.toml"),
+        Some(&node.path().join("missing"))
+    )
+    .is_empty());
+}
+
+/// A typo in a site file is as fatal as one in conminer.toml, and the error
+/// names the site file so the operator knows which file to fix.
+#[test]
+fn a_bad_key_in_a_site_file_is_an_error_naming_that_file() {
+    let node = node_with(
+        include_str!("../../../../conminer.toml"),
+        &[("node.toml", "[hooks]\npower_timeout_sec = 45\n")],
+    );
+    let e = Config::load(&node.path().join("conminer.toml")).unwrap_err();
+    assert_eq!(e.code, ErrorCode::InvalidConfig);
+    assert!(e.message.contains("node.toml"), "{}", e.message);
+    assert!(e.message.contains("power_timeout_sec"), "{}", e.message);
+
+    let broken = node_with("", &[("node.toml", "[hooks\n")]);
+    let e = Config::load(&broken.path().join("conminer.toml")).unwrap_err();
+    assert!(e.message.contains("node.toml"), "{}", e.message);
+
+    let range = node_with("", &[("node.toml", "[mine]\nsimilarity = 7.0\n")]);
+    assert!(Config::load(&range.path().join("conminer.toml")).is_err());
+    let problems =
+        Config::check_path(&range.path().join("conminer.toml")).expect("parses, out of range");
+    assert!(
+        problems.iter().any(|p| p.key.contains("similarity")),
+        "{problems:?}"
+    );
+}
+
+/// Site files never reach the repository: everything in `site.d` but its
+/// README is ignored, and the directory exists in every checkout so compose
+/// can mount it.
+#[test]
+fn site_files_are_kept_out_of_the_repository() {
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+    assert!(root.join("site.d/README.md").is_file());
+    let ignore = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+    let lines: Vec<&str> = ignore.lines().map(str::trim).collect();
+    assert!(lines.contains(&"/site.d/*"), "{ignore}");
+    assert!(lines.contains(&"!/site.d/README.md"), "{ignore}");
+}

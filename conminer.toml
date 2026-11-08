@@ -114,6 +114,7 @@ fastboot_settle_s = 20      # boot_mode FASTBOOT waits this long for the board's
 [credentials]
 # Per-device login credentials live in a separate 0600 file, never in the
 # registry DB, never in export_session output, never echoed into stored TX bytes.
+# A node names its own file in a site file (site.d/*.toml, docs/credentials.md).
 file = ""
 
 # ------------------------------------------------------------ service --------

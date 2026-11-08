@@ -43,7 +43,34 @@ the new file and the old image.
   goes here too: `CONMINER_RUNNER_ALLOW_RAW_SEND=true` enables the raw `send`
   passthrough on this node only.
 - `instance.json`: this node's identity.
+- `site.d/`: the node's own config (below).
 - `/data`: the per-device stores.
+
+## Node-local config
+
+`conminer.toml` documents the compiled defaults and is the same on every node
+(the `config` suite holds it to that). What belongs to one node goes in
+`site.d/*.toml` beside it instead: a console's `[devices."<selector>"]`
+section and hooks, a `[credentials] file`, anything that names this node's
+hardware or paths. Every service loads `conminer.toml` and then each site file
+in name order. Tables merge key by key, so a site file names only what it
+changes; any other value, an array such as `[[controllers]]` included,
+replaces the one before it. A typo in a site file stops the service like one
+in `conminer.toml`, and the error names the file. `conminer check-config`
+checks the layered result.
+
+    # site.d/node.toml
+    [credentials]
+    file = "/var/lib/conminer/credentials.toml"
+
+    [devices."/dev/serial/by-id/usb-FTDI_Example-if00-port0".hooks]
+    flash = "/bin/sh /exports/example/flash.sh {image}"
+
+Compose mounts the directory at `/etc/conminer/site.d` (`CONMINER_SITE_DIR`
+names another one). Only its README is tracked, a deploy never overwrites it,
+and `./cm build-id` does not hash it, so nodes with different site files still
+report the same build for the same source. A change to a site file takes
+effect when the services restart (`./cm up`).
 
 ## Health
 

@@ -773,6 +773,70 @@ fn syncing_clears_stale_sources_so_the_fingerprint_is_honest() {
     );
 }
 
+/// A node's site files are its own: a sync leaves them alone, and they do not
+/// change the build fingerprint, so two nodes configured differently still
+/// report the same build for the same source.
+#[test]
+fn syncing_keeps_the_nodes_site_files_and_they_are_not_fingerprinted() {
+    let node = tempfile::tempdir().unwrap();
+    let id_of = |dir: &std::path::Path| {
+        let o = std::process::Command::new("bash")
+            .args(["cm", "build-id"])
+            .current_dir(dir)
+            .output()
+            .expect("cm build-id runs");
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let sync = || {
+        let o = std::process::Command::new("bash")
+            .args(["cm", "sync", "--local"])
+            .arg(node.path())
+            .current_dir(repo_root())
+            .output()
+            .expect("cm sync runs");
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    };
+    sync();
+    let bare = id_of(node.path());
+    assert!(!bare.is_empty(), "build-id produced nothing");
+
+    let site = "[credentials]\nfile = \"/var/lib/conminer/credentials.toml\"\n";
+    std::fs::create_dir_all(node.path().join("site.d")).unwrap();
+    std::fs::write(node.path().join("site.d/node.toml"), site).unwrap();
+    assert_eq!(
+        id_of(node.path()),
+        bare,
+        "site files must not be fingerprinted"
+    );
+
+    sync();
+    assert_eq!(
+        std::fs::read_to_string(node.path().join("site.d/node.toml")).unwrap(),
+        site,
+        "a sync must not overwrite the node's site files"
+    );
+    assert_eq!(id_of(node.path()), id_of(&repo_root()));
+}
+
+/// Every service that reads conminer.toml reads the site files too.
+#[test]
+fn every_service_that_mounts_the_config_mounts_the_site_files() {
+    let compose = compose();
+    let config = compose
+        .lines()
+        .filter(|l| l.trim() == "- ./conminer.toml:/etc/conminer/conminer.toml:ro")
+        .count();
+    let site = compose
+        .lines()
+        .filter(|l| l.trim() == "- ./site.d:/etc/conminer/site.d:ro")
+        .count();
+    assert!(config > 0);
+    assert_eq!(
+        site, config,
+        "a service would run without the node's config"
+    );
+}
+
 /// DEPLOYING MUST NOT ERASE THE BUILD FINGERPRINT.
 ///
 /// `./cm image` passed `CONMINER_BUILD` as a `--build-arg`, but `./cm up` runs

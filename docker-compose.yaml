@@ -36,6 +36,7 @@ x-common: &common
     - conminer-run:/run/conminer
     - ./profiles.d:/etc/conminer/profiles.d:ro
     - ./conminer.toml:/etc/conminer/conminer.toml:ro
+    - ./site.d:/etc/conminer/site.d:ro
     - ./selftest.toml:/etc/conminer/selftest.toml:ro
   networks:
     - conminer
@@ -52,6 +53,7 @@ services:
       - conminer-run:/run/conminer
       - ./profiles.d:/etc/conminer/profiles.d:ro
       - ./conminer.toml:/etc/conminer/conminer.toml:ro
+      - ./site.d:/etc/conminer/site.d:ro
       - ./selftest.toml:/etc/conminer/selftest.toml:ro
       - /dev:/dev
       - /run/udev:/run/udev:ro
@@ -85,6 +87,7 @@ services:
       - conminer-data:/var/lib/conminer
       - conminer-run:/run/conminer
       - ./conminer.toml:/etc/conminer/conminer.toml:ro
+      - ./site.d:/etc/conminer/site.d:ro
       - ./selftest.toml:/etc/conminer/selftest.toml:ro
       - /dev:/dev
     # /run is supposed to be ephemeral, and in this image it is not: it lives in
@@ -171,6 +174,7 @@ services:
     volumes:
       - conminer-data:/var/lib/conminer
       - ./conminer.toml:/etc/conminer/conminer.toml:ro
+      - ./site.d:/etc/conminer/site.d:ro
     mem_limit: 512m
 
   mcpd:
@@ -235,6 +239,7 @@ services:
       - conminer-run:/run/conminer
       - ./profiles.d:/etc/conminer/profiles.d:ro
       - ./conminer.toml:/etc/conminer/conminer.toml:ro
+      - ./site.d:/etc/conminer/site.d:ro
       - ./selftest.toml:/etc/conminer/selftest.toml:ro
       - ./tools/bantam-power:/usr/local/bin/bantam-power:ro
       # Exports and ingest land here, so a session archive written by a tool call

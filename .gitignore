@@ -10,6 +10,9 @@ Cargo.lock.orig
 instance.json
 /data/
 exports/
+# Node-local config layered over conminer.toml (docs/operations.md).
+/site.d/*
+!/site.d/README.md
 
 # Insta writes these next to the goldens on mismatch.
 **/*.snap.new

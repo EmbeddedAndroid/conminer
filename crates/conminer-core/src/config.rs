@@ -1740,13 +1740,55 @@ impl Config {
     /// while `deny_unknown_fields` still rejects typos, because the merged table
     /// carries the unknown key straight into the final deserialize.
     pub fn parse_unvalidated(s: &str) -> Result<Self> {
-        let user: toml::Value =
-            toml::from_str(s).map_err(|e| locate(s, e.message().to_string(), e.span()))?;
+        Self::parse_layers_unvalidated(&[("conminer.toml".into(), s.to_string())])
+    }
+
+    /// [`Config::parse_unvalidated`] over several files, each merged over the
+    /// ones before it: `conminer.toml` first, then the node's site files.
+    ///
+    /// Tables merge key by key, so a site file names only what it changes;
+    /// any other value, an array such as `[[controllers]]` included, replaces
+    /// the one before it. An error in a site file names that file.
+    pub fn parse_layers_unvalidated(layers: &[(String, String)]) -> Result<Self> {
+        let in_layer = |i: usize, e: ToolError| {
+            if i == 0 {
+                e
+            } else {
+                ToolError {
+                    message: format!("{}: {}", layers[i].0, e.message),
+                    ..e
+                }
+            }
+        };
         let mut merged = toml::Value::try_from(Config::default()).map_err(ToolError::internal)?;
-        merge_toml(&mut merged, &user);
-        merged
-            .try_into()
-            .map_err(|e: toml::de::Error| locate(s, e.message().to_string(), e.span()))
+        let mut parsed = Vec::with_capacity(layers.len());
+        for (i, (_, text)) in layers.iter().enumerate() {
+            let user: toml::Value = toml::from_str(text)
+                .map_err(|e| in_layer(i, locate(text, e.message().to_string(), e.span())))?;
+            merge_toml(&mut merged, &user);
+            parsed.push(user);
+        }
+        match merged.try_into() {
+            Ok(cfg) => Ok(cfg),
+            Err(e) => {
+                let e: toml::de::Error = e;
+                // The merged table has no spans: find the first layer that
+                // makes the merge fail, and point into that file.
+                let mut partial =
+                    toml::Value::try_from(Config::default()).map_err(ToolError::internal)?;
+                for (i, user) in parsed.iter().enumerate() {
+                    merge_toml(&mut partial, user);
+                    if let Err(le) = partial.clone().try_into::<Config>() {
+                        let text = &layers[i].1;
+                        return Err(in_layer(
+                            i,
+                            locate(text, le.message().to_string(), le.span()),
+                        ));
+                    }
+                }
+                Err(locate(&layers[0].1, e.message().to_string(), e.span()))
+            }
+        }
     }
 
     pub fn from_toml_str(s: &str) -> Result<Self> {
@@ -1761,17 +1803,37 @@ impl Config {
         Ok(Self::parse_unvalidated(s)?.problems())
     }
 
+    /// `conminer check-config` for a config file and the site files beside it.
+    pub fn check_path(path: &Path) -> Result<Vec<ConfigProblem>> {
+        Ok(Self::parse_layers_unvalidated(&Self::layers(path)?)?.problems())
+    }
+
+    /// Load `path`, then every site file layered over it (see [`site_files`]).
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            ToolError::new(
-                ErrorCode::InvalidConfig,
-                format!("cannot read {}: {e}", path.display()),
-            )
-        })?;
-        let mut cfg = Self::from_toml_str(&text)?;
+        let mut cfg = Self::parse_layers_unvalidated(&Self::layers(path)?)?;
+        cfg.validate()?;
         cfg.apply_env(&std_env_pairs());
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    fn layers(path: &Path) -> Result<Vec<(String, String)>> {
+        let read = |p: &Path| {
+            std::fs::read_to_string(p).map_err(|e| {
+                ToolError::new(
+                    ErrorCode::InvalidConfig,
+                    format!("cannot read {}: {e}", p.display()),
+                )
+            })
+        };
+        let mut layers = vec![(path.display().to_string(), read(path)?)];
+        let site_dir = std::env::var_os("CONMINER_SITE_DIR")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from);
+        for f in site_files(path, site_dir.as_deref()) {
+            layers.push((f.display().to_string(), read(&f)?));
+        }
+        Ok(layers)
     }
 
     /// Load from `$CONMINER_CONFIG` if set and present, else defaults.
@@ -2671,6 +2733,34 @@ fn parse_duration_days(s: &str) -> Option<u64> {
         None => (s.strip_suffix('w')?, 7),
     };
     Some(num.parse::<u64>().ok()? * mult)
+}
+
+/// The node's site files: every `*.toml` in `site_dir`, or in `site.d` beside
+/// `config_path` when none is given, in name order.
+///
+/// `conminer.toml` documents the compiled defaults and is the same on every
+/// node. What belongs to one node (its consoles' hooks, a credentials path,
+/// anything naming its own hardware) goes in a site file instead, which a
+/// deploy never overwrites and the build fingerprint does not hash. A missing
+/// directory means no site files.
+pub fn site_files(config_path: &Path, site_dir: Option<&Path>) -> Vec<PathBuf> {
+    let dir = match site_dir {
+        Some(d) => d.to_path_buf(),
+        None => config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("site.d"),
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml") && p.is_file())
+        .collect();
+    files.sort();
+    files
 }
 
 fn std_env_pairs() -> Vec<(String, String)> {
