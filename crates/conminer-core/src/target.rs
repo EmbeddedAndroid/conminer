@@ -41,17 +41,66 @@ pub struct Target {
 /// that binds a controller to the right board. So a board is a target by
 /// default, and an explicit `target` in config still wins for a bench wired in
 /// some way topology cannot see.
-fn target_of(d: &DeviceRow) -> Option<String> {
+///
+/// TOPOLOGY ONLY WHILE THE POSITION IS STILL ITS OWN. See [`has_position`].
+fn target_of(d: &DeviceRow, rows: &[DeviceRow]) -> Option<String> {
     if let Some(t) = &d.target {
         return Some(t.clone());
     }
-    crate::config::topology_group(d.by_path.as_deref())
+    has_position(d, rows)
+        .then(|| crate::config::topology_group(d.by_path.as_deref()))
+        .flatten()
+}
+
+/// Does this row's `by_path` still say where the device belongs?
+///
+/// A gone row keeps its last `by_path`. Usually that is still right: a UART
+/// bridge powered by its board leaves the bus while the board is off, a console
+/// re-enumerates as a download gadget in EDL, and both must stay in their
+/// board's target. It is wrong once something else is plugged in THERE: a
+/// debug adapter last seen on a port that now holds another board's hub
+/// would join that board's target, and a power by that target would open
+/// epochs on a board nobody touched. So a gone row loses its position when a
+/// present console of ANOTHER adapter sits on its port or below it; the other
+/// interfaces of its own adapter share its port and say nothing about it.
+pub fn has_position(d: &DeviceRow, rows: &[DeviceRow]) -> bool {
+    if d.is_present() {
+        return true;
+    }
+    let Some(mine) = d
+        .by_path
+        .as_deref()
+        .and_then(crate::attribution::by_path_chain)
+    else {
+        return true;
+    };
+    let below = format!("{mine}.");
+    !rows
+        .iter()
+        .filter(|r| r.id != d.id && r.is_present() && !r.kind.is_remote())
+        .filter(|r| adapter_stem(&r.canonical) != adapter_stem(&d.canonical))
+        .filter_map(|r| {
+            r.by_path
+                .as_deref()
+                .and_then(crate::attribution::by_path_chain)
+        })
+        .any(|c| c == mine || c.starts_with(&below))
+}
+
+/// `...usb-FTDI_X_SERIAL-if02-port0` -> `...usb-FTDI_X_SERIAL`: one USB
+/// adapter, whichever interface.
+fn adapter_stem(canonical: &str) -> &str {
+    match canonical.rfind("-if") {
+        Some(i) if canonical[i + 3..].starts_with(|c: char| c.is_ascii_digit()) => &canonical[..i],
+        _ => canonical,
+    }
 }
 
 pub fn list(reg: &Registry) -> Result<Vec<Target>> {
     let mut by_name: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-    for d in reg.all_devices()? {
-        if let Some(t) = target_of(&d) {
+    let rows = reg.all_devices()?;
+    for d in &rows {
+        if let Some(t) = target_of(d, &rows) {
             by_name
                 .entry(t)
                 .or_default()
@@ -104,10 +153,11 @@ pub fn resolve_name(reg: &Registry, sel: &str) -> Result<String> {
 /// The devices belonging to a target, in a stable order.
 pub fn members(reg: &Registry, target: &str) -> Result<Vec<DeviceRow>> {
     let target = &resolve_name(reg, target)?;
-    let mut out: Vec<DeviceRow> = reg
-        .all_devices()?
-        .into_iter()
-        .filter(|d| target_of(d).as_deref() == Some(target))
+    let rows = reg.all_devices()?;
+    let mut out: Vec<DeviceRow> = rows
+        .iter()
+        .filter(|d| target_of(d, &rows).as_deref() == Some(target))
+        .cloned()
         .collect();
     if out.is_empty() {
         return Err(ToolError::new(
@@ -151,9 +201,10 @@ pub fn rename(reg: &mut Registry, target: &str, name: Option<&str>) -> Result<Ve
         // boards into one target -- and a power event on one would then open
         // epochs on the other's consoles.
         if let Ok(existing) = members(reg, n) {
+            let rows = reg.all_devices()?;
             let clash: Vec<String> = existing
                 .iter()
-                .filter(|d| target_of(d).as_deref() != Some(target))
+                .filter(|d| target_of(d, &rows).as_deref() != Some(target))
                 .map(|d| d.display_name().to_string())
                 .collect();
             if !clash.is_empty() {
@@ -426,5 +477,165 @@ mod tests {
         let merged = interleave(&reg, dir.path(), "rb3", 1_000, 500, 100).unwrap();
         assert_eq!(merged.len(), 1, "only the line inside ±500 ms");
         assert_eq!(merged[0].ts_wall, 1_000);
+    }
+
+    /// Board A's harness on hub 2.2, board B's on hub 2.4, and board C's
+    /// debug adapter, gone, last seen plugged straight into port 2.2, where
+    /// board A's hub is now.
+    fn bench(reg: &mut Registry) {
+        let p = |chain: &str, ifn: u8| format!("pci-0000:00:14.0-usb-0:{chain}:1.{ifn}-port0");
+        let mut put = |canonical: &str, by_path: String, gone: bool| {
+            let d = reg
+                .upsert_device(canonical, Some(&by_path), IdentityKind::ById, None, 1)
+                .unwrap();
+            reg.set_state(d.id, if gone { "gone" } else { "discovered" })
+                .unwrap();
+        };
+        for i in 0..4 {
+            put(
+                &format!("usb-FTDI_Board_A_UART_UARTA001-if0{i}-port0"),
+                p("2.2.2", i),
+                false,
+            );
+            put(
+                &format!("usb-FTDI_Board_B_UART_UARTB001-if0{i}-port0"),
+                p("2.4.2", i),
+                false,
+            );
+            put(
+                &format!("usb-FTDI_Board_C_DEBUG_DBGC0001-if0{i}-port0"),
+                p("2.2", i),
+                true,
+            );
+        }
+        put(
+            "usb-Microchip_Technology_Inc._Bantam_CTLA0001-if00",
+            p("2.2.4", 0),
+            false,
+        );
+        put(
+            "usb-Microchip_Technology_Inc._Bantam_CTLB0001-if00",
+            p("2.4.4", 0),
+            false,
+        );
+    }
+
+    #[test]
+    fn a_gone_board_does_not_join_the_target_now_on_its_old_hub() {
+        let (_d, mut reg) = rig();
+        bench(&mut reg);
+        let t = list(&reg).unwrap();
+        let names: Vec<&str> = t.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["2.2", "2.4"]);
+        let board_a = &t[0].members;
+        assert_eq!(board_a.len(), 5, "{board_a:?}");
+        assert!(
+            board_a.iter().all(|m| !m.contains("Board_C")),
+            "{board_a:?}"
+        );
+        assert!(t[1]
+            .members
+            .iter()
+            .all(|m| m.contains("Board_B") || m.contains("CTLB0001")));
+        let acted: Vec<String> = members(&reg, "2.2")
+            .unwrap()
+            .into_iter()
+            .map(|d| d.canonical)
+            .collect();
+        assert!(acted.iter().all(|m| !m.contains("Board_C")), "{acted:?}");
+    }
+
+    #[test]
+    fn a_returning_board_rejoins_its_hub_and_a_named_target_survives_unplugging() {
+        let (_d, mut reg) = rig();
+        bench(&mut reg);
+        let mtp: Vec<DeviceRow> = reg
+            .all_devices()
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.canonical.contains("Board_C"))
+            .collect();
+        // Present again where it was: topology speaks for it again.
+        for d in &mtp {
+            reg.set_state(d.id, "discovered").unwrap();
+        }
+        assert_eq!(members(&reg, "2.2").unwrap().len(), 9);
+        // Gone but explicitly named: the operator's name is not topology.
+        for d in &mtp {
+            reg.set_state(d.id, "gone").unwrap();
+            reg.set_target(d.id, Some("board-c")).unwrap();
+        }
+        assert_eq!(members(&reg, "board-c").unwrap().len(), 4);
+        assert_eq!(members(&reg, "2.2").unwrap().len(), 5);
+    }
+
+    /// The regression this rule must not cause: a UART bridge powered by its
+    /// board leaves the bus while the board is off, and a positional console
+    /// does the same; both stay in the target, or a power-on by target would
+    /// not open an epoch on them.
+    #[test]
+    fn a_console_that_left_the_bus_beside_its_board_keeps_its_target() {
+        let (_d, mut reg) = rig();
+        bench(&mut reg);
+        let bp = "pci-0000:00:14.0-usb-0:2.4.1:1.3-port0";
+        let d = reg
+            .upsert_device(
+                &format!("/dev/serial/by-path/{bp}"),
+                Some(bp),
+                IdentityKind::Positional,
+                None,
+                1,
+            )
+            .unwrap();
+        reg.set_state(d.id, "gone").unwrap();
+        let bridge = reg
+            .upsert_device(
+                "usb-FTDI_Board_Powered_Bridge_B0A4D001-if00-port0",
+                Some("pci-0000:00:14.0-usb-0:2.4.3:1.0-port0"),
+                IdentityKind::ById,
+                None,
+                1,
+            )
+            .unwrap();
+        reg.set_state(bridge.id, "gone").unwrap();
+        assert_eq!(members(&reg, "2.4").unwrap().len(), 7);
+    }
+
+    /// Re-occupied exactly: another adapter now on the very port.
+    #[test]
+    fn a_gone_console_whose_port_holds_another_adapter_leaves_the_target() {
+        let (_d, mut reg) = rig();
+        bench(&mut reg);
+        let old = reg
+            .upsert_device(
+                "usb-FTDI_Old_Board_UART_OLD00001-if00-port0",
+                Some("pci-0000:00:14.0-usb-0:2.4.2:1.0-port0"),
+                IdentityKind::ById,
+                None,
+                1,
+            )
+            .unwrap();
+        reg.set_state(old.id, "gone").unwrap();
+        let m = members(&reg, "2.4").unwrap();
+        assert!(m.iter().all(|d| d.id != old.id), "{m:?}");
+        assert_eq!(m.len(), 5);
+    }
+
+    /// One interface of a multi-port adapter can drop while its siblings stay
+    /// (a re-enumeration seen half-way); they share its port, which must not
+    /// read as another adapter taking it.
+    #[test]
+    fn a_gone_interface_keeps_its_target_beside_its_own_siblings() {
+        let (_d, mut reg) = rig();
+        bench(&mut reg);
+        let if03 = reg
+            .all_devices()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.canonical.contains("Board_B_UART") && d.canonical.contains("-if03"))
+            .unwrap();
+        reg.set_state(if03.id, "gone").unwrap();
+        let m = members(&reg, "2.4").unwrap();
+        assert!(m.iter().any(|d| d.id == if03.id), "{m:?}");
     }
 }

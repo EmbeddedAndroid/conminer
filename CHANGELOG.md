@@ -94,6 +94,11 @@ changes behaviour without adding an entry (§14.9).
   carries a console or controller this node knows is now never learned,
   resolved or kept as a board's gadget, and discovery removes such entries
   from tags written earlier.
+- A topology-derived target included gone by-id consoles at their last USB
+  position, so a board whose harness was unplugged joined the target (and
+  the dashboard chassis) of whatever board now sits on that hub, and a power
+  by that target opened epochs on it. Only a row that is present, or is
+  positional, takes its target from topology now.
 
 - The provenance check compared the intended image against the epoch's *bound*
   image, which `set_image` had just written from the same claim. Every check

@@ -4548,3 +4548,56 @@ fn an_aborted_normal_boot_fails_loudly_and_shows_what_is_still_held() {
         "a failed press still hands the console back"
     );
 }
+
+/// The page draws a gone row while it is believed to be coming back (here: in
+/// EDL). Its `by_path` decides its chassis, and that is right unless another
+/// console now occupies its port: board C's adapter, last seen on port 2.2
+/// where board A's hub now sits, must not be drawn inside board A's chassis,
+/// while board A's own console that left the bus beside its siblings stays.
+#[test]
+fn a_gone_board_is_not_drawn_in_the_chassis_now_on_its_old_port() {
+    let rig = Rig::start(cfg());
+    let at = |chain: &str, i: u16| format!("pci-0000:00:14.0-usb-0:{chain}:1.{i}-port0");
+    for i in 0..2u16 {
+        rig.add_device_at(
+            &format!("usb-FTDI_Board_A_UART_UARTA001-if0{i}-port0"),
+            Some(&at("2.2.2", i)),
+            Some(5101 + i),
+        );
+        rig.add_device_at(
+            &format!("usb-FTDI_Board_C_DEBUG_DBGC0001-if0{i}-port0"),
+            Some(&at("2.2", i)),
+            Some(5111 + i),
+        );
+    }
+    rig.add_device_at(
+        "usb-FTDI_Board_A_SPI_SPIA0001-if00-port0",
+        Some(&at("2.2.3", 0)),
+        Some(5121),
+    );
+    {
+        let mut reg = rig.registry();
+        for d in reg.all_devices().unwrap() {
+            if d.canonical.contains("Board_C") || d.canonical.contains("Board_A_SPI") {
+                reg.set_state(d.id, "gone").unwrap();
+                reg.set_capture_state(d.id, "away_in_edl").unwrap();
+            }
+        }
+    }
+    let v = rig.until("five rows, three away", |v| {
+        let d = v["devices"].as_array().unwrap();
+        d.len() == 5 && d.iter().filter(|d| d["present"] == false).count() == 3
+    });
+    for d in v["devices"].as_array().unwrap() {
+        let name = d["canonical"].as_str().unwrap_or_default();
+        let adapter = d["adapter"].as_str().unwrap_or_default();
+        if name.contains("Board_C") {
+            assert_eq!(
+                adapter, "usb-FTDI_Board_C_DEBUG_DBGC0001",
+                "a board whose port is re-occupied groups by its own adapter: {d}"
+            );
+        } else {
+            assert_eq!(adapter, "2.2", "board A keeps its chassis ({name}): {d}");
+        }
+    }
+}

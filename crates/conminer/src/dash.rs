@@ -797,8 +797,12 @@ impl Dash {
                         // bench by controller path would rename every chassis
                         // an operator already knows.
                         .filter(|_| d.node.is_some())
+                        // A gone row whose port another console now occupies
+                        // would otherwise be drawn in that board's chassis.
                         .or_else(|| {
-                            topology_group(d.by_path.as_deref())
+                            conminer_core::target::has_position(d, &rows)
+                                .then(|| topology_group(d.by_path.as_deref()))
+                                .flatten()
                                 .or_else(|| adapter_of(&d.canonical))
                         }),
                     // What to HEAD that chassis with, when the key is not itself

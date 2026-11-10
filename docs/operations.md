@@ -103,6 +103,13 @@ entry needs no restart. Format, placement and what is refused:
 
 ## Boards, hubs and learned USB devices
 
+A board's consoles and controller are grouped into a target by the USB hub
+they share (`2.2`, `3.1`), unless conminer.toml or `name_target` names one.
+Only consoles that are plugged in, or are keyed by position, take their target
+from the hub: a by-id console that is gone keeps its last `by_path`, and the
+hub may hold another board's harness by now. Name a target to keep an
+unplugged board's consoles together.
+
 After a power or boot-mode action, devices that enumerate within two minutes
 are learned as that board's gadgets (`usb_identity`, `usb_ports` tags) and
 scope its EDL and zombie checks. A device that carries a console or controller
