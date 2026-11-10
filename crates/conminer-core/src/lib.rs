@@ -13,6 +13,7 @@
 //! all derived views that can be rebuilt from the raw store at any time.
 
 pub mod absence;
+pub mod attribution;
 pub mod bisect;
 pub mod broker;
 pub mod clock;

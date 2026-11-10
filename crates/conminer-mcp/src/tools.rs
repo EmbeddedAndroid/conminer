@@ -12,6 +12,7 @@
 //!   own currency instead of inviting the agent to assume it is current.
 
 use crate::state::Context;
+use conminer_core::attribution;
 use conminer_core::console::ConsoleState;
 use conminer_core::error::{ErrorCode, Result, ToolError};
 use conminer_core::follow::Predicate;
@@ -1042,14 +1043,28 @@ pub(crate) fn declared_usb_ports(ctx: &Context, d: &DeviceRow) -> Vec<String> {
         d.display_name(),
         d.label().unwrap_or_default(),
     ]);
-    let identities = tag_list(d, "usb_identity");
+    // Tags learned before the adapter rule existed may name another board's
+    // console adapter or controller; never let one become this board's scope.
+    let rows = ctx.registry().all_devices().unwrap_or_default();
+    let identities: Vec<String> = tag_list(d, "usb_identity")
+        .into_iter()
+        .filter(|i| !attribution::identity_is_adapter(i, &rows))
+        .collect();
     let resolved = if identities.is_empty() {
         Vec::new()
     } else {
-        conminer_core::usb::ports_of(&conminer_core::usb::list_identified(), &identities)
+        let bus: Vec<_> = conminer_core::usb::list_identified()
+            .into_iter()
+            .filter(|b| !attribution::is_known_adapter(b, &rows))
+            .collect();
+        conminer_core::usb::ports_of(&bus, &identities)
     };
     if resolved.is_empty() {
-        ports.extend(tag_list(d, "usb_ports"));
+        ports.extend(
+            tag_list(d, "usb_ports")
+                .into_iter()
+                .filter(|p| !attribution::port_is_adapter(p, &rows)),
+        );
     } else {
         ports.extend(resolved);
     }
@@ -1170,6 +1185,9 @@ const USB_LEARN_WINDOW: std::time::Duration = std::time::Duration::from_secs(120
 /// window afterwards, are not part of the board's own console adapter, and are
 /// not already another board's, are recorded on every console of the board:
 /// their identities in `usb_identity` and their current ports in `usb_ports`.
+/// A device carrying any console or controller this node knows is a debug
+/// adapter, never a gadget, so a harness plugged in during the window is not
+/// learned (see [`attribution`]).
 /// The attribution is causal, the same rule the selftest uses for its EDL
 /// gadget, so it is abandoned the moment any other board on this node starts
 /// actuating: two boards powering up together cannot be told apart.
@@ -1195,9 +1213,11 @@ pub(crate) fn spawn_usb_learner(
                 }
                 let now = conminer_core::usb::list_identified();
                 let others = identities_of_other_boards(&ctx, &ids);
+                let rows = ctx.registry().all_devices().unwrap_or_default();
                 let fresh: Vec<String> = conminer_core::usb::appeared(&before, &now)
                     .into_iter()
                     .filter(|d| d.port_path.as_ref().is_some_and(|p| !own.contains(p)))
+                    .filter(|d| !attribution::is_known_adapter(d, &rows))
                     .filter_map(|d| d.identity())
                     .filter(|i| !others.contains(i) && !learned.contains(i))
                     .collect();
@@ -1233,21 +1253,28 @@ fn record_usb_identity(
 ) {
     let mut reg = ctx.registry();
     for c in consoles {
-        let current = reg
-            .all_devices()
-            .ok()
-            .and_then(|all| all.into_iter().find(|d| d.id == c.id))
-            .map(|d| tag_list(&d, "usb_identity"))
+        let rows = reg.all_devices().unwrap_or_default();
+        let current = rows
+            .iter()
+            .find(|d| d.id == c.id)
+            .map(|d| tag_list(d, "usb_identity"))
             .unwrap_or_default();
         let mut ids: Vec<String> = current
             .into_iter()
             .filter(|i| !learned.contains(i))
             .chain(learned.iter().cloned())
+            .filter(|i| !attribution::identity_is_adapter(i, &rows))
             .collect();
+        if ids.is_empty() {
+            continue;
+        }
         if ids.len() > USB_IDENTITY_CAP {
             ids.drain(..ids.len() - USB_IDENTITY_CAP);
         }
-        let ports = conminer_core::usb::ports_of(bus, &ids);
+        let ports: Vec<String> = conminer_core::usb::ports_of(bus, &ids)
+            .into_iter()
+            .filter(|p| !attribution::port_is_adapter(p, &rows))
+            .collect();
         let mut tags = std::collections::BTreeMap::new();
         tags.insert("usb_identity".to_string(), ids.join(","));
         if !ports.is_empty() {

@@ -219,6 +219,10 @@ pub struct Reconciled {
     pub gone: Vec<String>,
     pub ignored: Vec<String>,
     pub unchanged: usize,
+    /// Rows whose learned USB attribution named another board's debug
+    /// adapter, which this pass removed (see [`crate::attribution`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unattributed: Vec<String>,
 }
 
 impl Reconciled {
@@ -324,6 +328,10 @@ pub fn reconcile(
             r.gone.push(known.canonical.clone());
         }
     }
+
+    // Presence and identity are settled now, which is what the rule needs: a
+    // cable just registered as a console is no longer anyone's gadget.
+    r.unattributed = crate::attribution::heal(reg)?;
 
     Ok(r)
 }

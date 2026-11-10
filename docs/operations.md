@@ -101,6 +101,15 @@ and owned by the user conminer runs as; it is read at each gate, so adding an
 entry needs no restart. Format, placement and what is refused:
 [credentials.md](credentials.md).
 
+## Boards, hubs and learned USB devices
+
+After a power or boot-mode action, devices that enumerate within two minutes
+are learned as that board's gadgets (`usb_identity`, `usb_ports` tags) and
+scope its EDL and zombie checks. A device that carries a console or controller
+this node knows (its serial is in a by-id name, or a present console sits on
+its port) is a debug adapter and is never learned, resolved or kept as a
+gadget; discovery removes such entries from tags on every pass.
+
 ## Storage
 
 Stores grow with use. `stats` reports `db_bytes`, line and template counts, and

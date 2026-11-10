@@ -87,6 +87,14 @@ changes behaviour without adding an entry (§14.9).
 
 ### Fixed
 
+- A board's learned USB devices (`usb_identity`, `usb_ports`) could include
+  another board's debug harness: any device that enumerated in the window
+  after an actuation was attributed to the actuated board, so a harness
+  plugged in at that moment became its EDL and zombie scope. A device that
+  carries a console or controller this node knows is now never learned,
+  resolved or kept as a board's gadget, and discovery removes such entries
+  from tags written earlier.
+
 - The provenance check compared the intended image against the epoch's *bound*
   image, which `set_image` had just written from the same claim. Every check
   passed by construction: the exact false all-clear the guard exists to prevent.
