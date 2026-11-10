@@ -99,6 +99,9 @@ changes behaviour without adding an entry (§14.9).
   the dashboard chassis) of whatever board now sits on that hub, and a power
   by that target opened epochs on it. Only a row that is present, or is
   positional, takes its target from topology now.
+- Two matching controllers on one console's hub (two boards' harnesses on
+  one hub) bound the first one found; the binding now refuses rather than
+  guess which board it powers.
 
 - The provenance check compared the intended image against the epoch's *bound*
   image, which `set_image` had just written from the same claim. Every check

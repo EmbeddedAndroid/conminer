@@ -2668,11 +2668,32 @@ impl Config {
 
         if mine.is_some() {
             // Same board first.
-            if let Some((name, _)) = present
+            let local: Vec<&str> = present
                 .clone()
                 .into_iter()
-                .find(|(name, bp)| glob_match(&c.match_glob, name) && topology_group(*bp) == mine)
-            {
+                .filter(|(name, bp)| glob_match(&c.match_glob, name) && topology_group(*bp) == mine)
+                .map(|(name, _)| name)
+                .collect();
+            // Two controller ADAPTERS on one hub means two boards' harnesses
+            // share it, and topology cannot say which is ours. Several
+            // interfaces of one adapter are still one controller.
+            let mut adapters: Vec<&str> = local
+                .iter()
+                .map(|n| n.rfind("-if").map_or(*n, |i| &n[..i]))
+                .collect();
+            adapters.sort_unstable();
+            adapters.dedup();
+            if adapters.len() > 1 {
+                tracing::warn!(
+                    console = %canonical,
+                    controllers = %adapters.join(", "),
+                    "more than one matching controller shares this console's USB hub; \
+                     refusing to guess which board it powers: give each board's consoles \
+                     their own power hook in conminer.toml, or put each harness on its own hub"
+                );
+                return None;
+            }
+            if let Some(name) = local.first() {
                 return Some(name.to_string());
             }
             // A controller matching by name but sitting on ANOTHER board is not

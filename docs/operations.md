@@ -115,7 +115,9 @@ are learned as that board's gadgets (`usb_identity`, `usb_ports` tags) and
 scope its EDL and zombie checks. A device that carries a console or controller
 this node knows (its serial is in a by-id name, or a present console sits on
 its port) is a debug adapter and is never learned, resolved or kept as a
-gadget; discovery removes such entries from tags on every pass.
+gadget; discovery removes such entries from tags on every pass. Two boards'
+harnesses on one hub cannot be told apart by topology: the controller binding
+refuses rather than guess, so give each its own hub or its own power hook.
 
 ## Storage
 

@@ -1105,3 +1105,59 @@ fn site_files_are_kept_out_of_the_repository() {
     assert!(lines.contains(&"/site.d/*"), "{ignore}");
     assert!(lines.contains(&"!/site.d/README.md"), "{ignore}");
 }
+
+/// Two boards' harnesses plugged into ONE hub share a topology group, so the
+/// topology cannot say which Bantam powers which board. Binding the first match
+/// would power-cycle the wrong board; the binding must refuse instead. Several
+/// interfaces of one controller adapter are still one controller.
+#[test]
+fn two_boards_behind_one_hub_do_not_bind_a_guessed_controller() {
+    let at = |chain: &str| format!("pci-0000:00:14.0-usb-0:{chain}:1.0");
+    let (b_uart, a_uart) = (at("2.2.1"), at("2.2.3"));
+    let (b_ctl, a_ctl) = (at("2.2.2"), at("2.2.4"));
+    let present = [
+        (
+            "usb-Microchip_Technology_Inc._Bantam_CTLB0001-if00",
+            Some(b_ctl.as_str()),
+        ),
+        (
+            "usb-Microchip_Technology_Inc._Bantam_CTLA0001-if00",
+            Some(a_ctl.as_str()),
+        ),
+    ];
+    let cfg = Config::default();
+    for (console, bp) in [
+        ("usb-FTDI_Board_B_UART_UARTB001-if00-port0", &b_uart),
+        ("usb-FTDI_Board_A_UART_UARTA001-if00-port0", &a_uart),
+    ] {
+        assert!(
+            cfg.controller_for(console).is_some(),
+            "{console} must have a controller profile, or this proves nothing"
+        );
+        assert_eq!(
+            cfg.controller_port_for(console, Some(bp), present.iter().copied()),
+            None,
+            "{console} must not be bound to a guessed controller"
+        );
+    }
+
+    // One board alone on the hub, its controller showing two interfaces.
+    let one = [
+        (
+            "usb-Microchip_Technology_Inc._Bantam_CTLA0001-if00",
+            Some(a_ctl.as_str()),
+        ),
+        (
+            "usb-Microchip_Technology_Inc._Bantam_CTLA0001-if02",
+            Some(a_ctl.as_str()),
+        ),
+    ];
+    let picked = cfg
+        .controller_port_for(
+            "usb-FTDI_Board_A_UART_UARTA001-if00-port0",
+            Some(&a_uart),
+            one.iter().copied(),
+        )
+        .expect("one controller adapter is unambiguous");
+    assert!(picked.contains("CTLA0001-if00"), "{picked}");
+}
