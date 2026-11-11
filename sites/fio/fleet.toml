@@ -14,6 +14,11 @@ file = "/var/lib/conminer/credentials.toml"
 [devices."/dev/serial/by-id/usb-FTDI_NordAU_RIDE_SX_879X_UART_AI41BI4U0R-if00-port0".hooks]
 flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/nord-ride.board {image}"
 
+# galagos: NordAU RIDE SX SAIL SPI-NOR (SS-EDL); the flash hook of a second
+# console of the same board, since a console carries one flash hook.
+[devices."/dev/serial/by-id/usb-FTDI_NordAU_RIDE_SX_879X_UART_AI41BI4U0R-if01-port0".hooks]
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/nord-ride-spinor.board {image}"
+
 # galagos: Eliza CQ7790S MTP (Alpaca-lite FTBECAA0). Its USB ports are learned
 # by identity after each actuation (usb_identity tag). The fastboot serial is
 # the one the board's current boot loader presents; flash.sh reads the same
@@ -48,3 +53,7 @@ flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.
 # and normal_boots it afterwards. Image kinds are in its board file.
 [devices."/dev/serial/by-id/usb-FTDI_IQ10_UART-SPI_AR40BYP4AU-if00-port0".hooks]
 flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/nord-rrd.board {image}"
+
+# galagos: SecaAU RIDE SX (SA8787P, target 2.4), UFS.
+[devices."/dev/serial/by-id/usb-FTDI_RIDE_SX_8x87_UART_AI51BCFO7K-if00-port0".hooks]
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/seca-ride.board --device {device} {image}"

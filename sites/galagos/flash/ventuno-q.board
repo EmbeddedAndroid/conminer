@@ -1,0 +1,16 @@
+# Arduino VENTUNO Q (QCS8275), eMMC, 512-byte sectors. Flat builds staged as
+# vq-trixie-MONZAFP-<yymmdd>-<hhmmss>-deb carry their own prog_firehose_ddr.elf.
+# The hook runs every rawprogram*.xml and patch*.xml in the directory, so a
+# staged set holds only the ones to flash (rawprogram0-obs.xml and its patch),
+# with every file they name inside the directory and in SHA256SUMS.
+# No edl-serial is recorded yet: the hook refuses every flash until it is.
+# qdl runs --skip-reset; the caller power-cycles and checks the fingerprint.
+stage /exports/ventuno-flash
+storage emmc
+sector_bytes 512
+runtime runtime qdl-v2.8-46-g657f12f
+programmer prog_firehose_ddr.elf
+reset no
+console /dev/serial/by-id/usb-Arduino_Bughopper_DK0HEVIC-if00-port0
+
+ref xml vq-trixie-MONZAFP-[0-9]{6}-[0-9]{6}-deb own-programmer

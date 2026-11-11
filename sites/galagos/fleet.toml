@@ -37,9 +37,15 @@ flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.
 [devices."/dev/serial/by-id/usb-FTDI_RIDE_MICRO_4.0_FTAFIF1Q-if00-port0".hooks]
 flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/iq9-evk.board {image}"
 
-# fio: UNO Q (Bughopper DK0HEVIC)
+# fio: Arduino VENTUNO Q (QCS8275), "ventuno-q2" (fio/ventuno-q2 from a peer),
+# on Bughopper DK0HEVIC; power and boot_mode come from the Bughopper profile.
+# Its own USB device is usb-Arduino_VENTUNO_Q_-_ventunoq_3946702597-if01. The
+# UNO Q that used this Bughopper is unwired (flash/unoq.board kept).
+[devices."/dev/serial/by-id/usb-Arduino_Bughopper_DK0HEVIC-if00-port0"]
+nickname = "ventuno-q2"
+
 [devices."/dev/serial/by-id/usb-Arduino_Bughopper_DK0HEVIC-if00-port0".hooks]
-flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/unoq.board --device {device} {image}"
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/ventuno-q.board --device {device} {image}"
 
 # fio: Nord IQ10 RRD (SA8797P, Bantam IQ10RRDXXBANTAMTDC000034VG8). if02 is the
 # AP console, if03 SAIL. The hook writes UFS through the QDL device whose serial
@@ -48,5 +54,6 @@ flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.
 [devices."/dev/serial/by-id/usb-FTDI_IQ10_UART-SPI_AR40BYP4AU-if00-port0".hooks]
 flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/nord-rrd.board {image}"
 
+# galagos: SecaAU RIDE SX (SA8787P, target 2.4), UFS.
 [devices."/dev/serial/by-id/usb-FTDI_RIDE_SX_8x87_UART_AI51BCFO7K-if00-port0".hooks]
 flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/seca-ride.board --device {device} {image}"

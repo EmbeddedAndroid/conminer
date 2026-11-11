@@ -1,8 +1,8 @@
-# Nord IQ10 RRD (SA8797P), UFS, 4 KiB sectors. Map from this board's own GPT
-# (NORDREAD-rrd-gpt-probe, 2026-11-08): A slots on LUN 4, B slots on LUN 5,
-# apdp_a on LUN 1, apdp_b on LUN 2, the same as the RIDE SX. The stock RRD
-# flat build (both slots on LUN 4, efi on LUN 0) is NOT this board's layout.
-# Check a change with: qdl-flash --board <this> --check --gpt <NORDREAD dir>.
+# Nord IQ10 RRD (SA8797P), UFS, 4 KiB sectors. Layout after a NORDIMG or
+# NORD-STOCK full set (GPT read back 2026-11-08, NORDREAD-rrd-gpt-after-nordimg):
+# both slots of tz, uefi, uefi_dtb and apdp on LUN 4, efi on LUN 0. The board's
+# original automotive layout (B slots on LUN 5) is kept as .bak-ridemap; a full
+# set rewrites the GPT, so re-read it and --check --gpt after every full flash.
 # qdl runs --skip-reset: the caller normal_boots the board afterwards.
 stage /exports/nord-flash
 storage ufs
@@ -17,20 +17,11 @@ ref xml NORD-STOCK-[A-Za-z0-9._-]+ own-programmer
 ref xml NORDIMG-[A-Za-z0-9._-]+
 ref read NORDREAD-[A-Za-z0-9._-]+
 
-kind fip fip.elf 4/uefi_a 5/uefi_b
-kind tz tz.mbn 4/tz_a 5/tz_b
-kind boot-chain tz.mbn 4/tz_a 5/tz_b
-kind boot-chain fip.elf 4/uefi_a 5/uefi_b
-kind apdp apdp.mbn 1/apdp_a 2/apdp_b
-kind uefi-dtb uefi_dtbs.elf 4/uefi_dtb_a 5/uefi_dtb_b
+kind fip fip.elf 4/uefi_a 4/uefi_b
+kind tz tz.mbn 4/tz_a 4/tz_b
+kind boot-chain tz.mbn 4/tz_a 4/tz_b
+kind boot-chain fip.elf 4/uefi_a 4/uefi_b
+kind efi efi.bin 0/efi
+kind apdp apdp.mbn 4/apdp_a 4/apdp_b
+kind uefi-dtb uefi_dtbs.elf 4/uefi_dtb_a 4/uefi_dtb_b
 max_bytes apdp.mbn 65536
-
-# No efi kind: LUN 0 carries the automotive lv_/la_ layout and has no efi
-# partition, so an efi image is refused here ("unsupported flash kind: efi")
-# before qdl runs. Only a full repartition (a NORD-STOCK or NORDIMG set whose
-# rawprogram0.xml and patch0.xml create efi) adds one; after that, re-read the
-# GPT, then restore:
-#   kind efi efi.bin 0/efi
-# Were the line present without the partition, qdl would stop after Firehose
-# configure with 'no partition "efi" found on physical partition 0' and write
-# nothing (it resolves every label before the first write).
