@@ -1,0 +1,30 @@
+# NordAU RIDE SX (SA8797P), UFS, release 00010 layout since 2026-11-11 (the
+# qcom-ptool ca37e384 nord-rrd/ufs tables every LAVA Ride uses): A and B slots
+# both on LUN 4, efi on LUN 0, xbl on LUN 1/2, LUN 5 empty. The layout before
+# (A on LUN 4, B on LUN 5) is in nord-ride.board.bak-pre00010-layout; its UFS
+# backup is NORDREAD-ride-pre00010-20261111. SPI-NOR is nord-ride-spinor.board.
+# qdl runs --skip-reset: the caller boots the board afterwards (BOOT_UEFI).
+stage /exports/nord-flash
+storage ufs
+# Own serial file: edl-serial is the RRD's (nord-rrd.board shares this stage)
+edl_serial_file edl-serial-ride
+runtime runtime qdl-v2.8-46-g657f12f
+firehose firehose firehose-6c8cfa6d71fc
+programmer qsahara_device_programmer.xml
+reset no
+debug yes
+
+ref kind NORDFP-[0-9]{6}-[0-9]{6}|NORDPAIR-[a-f0-9]{12}
+ref xml NORD-STOCK-[A-Za-z0-9._-]+ own-programmer
+ref xml NORDIMG-[A-Za-z0-9._-]+
+ref read NORDREAD-[A-Za-z0-9._-]+
+
+# The first kind is the default when a directory has no flash-kind.txt.
+kind fip fip.elf 4/uefi_a 4/uefi_b
+kind tz tz.mbn 4/tz_a 4/tz_b
+kind boot-chain tz.mbn 4/tz_a 4/tz_b
+kind boot-chain fip.elf 4/uefi_a 4/uefi_b
+kind efi efi.bin 0/efi
+kind apdp apdp.mbn 4/apdp_a 4/apdp_b
+kind uefi-dtb uefi_dtbs.elf 4/uefi_dtb_a 4/uefi_dtb_b
+max_bytes apdp.mbn 65536

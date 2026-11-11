@@ -1,0 +1,52 @@
+# Site config for this fleet, layered over conminer.toml (docs/operations.md).
+# The same file on every node: a [devices] section names a by-id path, so it
+# is inert on a node where that console is not cabled. Node policy (raw send)
+# stays in each node's .env. Flash hooks are the image's qdl-flash with a
+# board file from flash/ (docs/flash-hooks.md); flash/ is the same on every
+# node too.
+
+[credentials]
+# It lives in the data volume; a node without it has no logins
+# (docs/credentials.md).
+file = "/var/lib/conminer/credentials.toml"
+
+# galagos: NordAU RIDE SX
+[devices."/dev/serial/by-id/usb-FTDI_NordAU_RIDE_SX_879X_UART_AI41BI4U0R-if00-port0".hooks]
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/nord-ride.board {image}"
+
+# galagos: NordAU RIDE SX SAIL SPI-NOR (SS-EDL); the flash hook of a second
+# console of the same board, since a console carries one flash hook.
+[devices."/dev/serial/by-id/usb-FTDI_NordAU_RIDE_SX_879X_UART_AI41BI4U0R-if01-port0".hooks]
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/nord-ride-spinor.board {image}"
+
+# galagos: Eliza CQ7790S MTP (Alpaca-lite FTBECAA0). Its USB ports are learned
+# by identity after each actuation (usb_identity tag). The fastboot serial is
+# the one the board's current boot loader presents; flash.sh reads the same
+# file.
+[devices."/dev/serial/by-id/usb-FTDI_ALPACA-LITE_MTP_DEBUG_BOARD_FTBECAA0-if00-port0"]
+fastboot_serial_file = "/exports/eliza-flash/fastboot-serial"
+
+[devices."/dev/serial/by-id/usb-FTDI_ALPACA-LITE_MTP_DEBUG_BOARD_FTBECAA0-if00-port0".hooks]
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/eliza-mtp.board {image}"
+
+[devices."/dev/serial/by-id/usb-FTDI_ALPACA-LITE_MTP_DEBUG_BOARD_FTBECAA0-if01-port0"]
+
+# galagos: IQ-9 EVK (QCS9075, TAC RIDE MICRO 4.0 FTAFIF1Q). The hook writes
+# only the SAIL NOR SAIL_HYP or SAIL_HYP_BKUP window, or reads a backup; the
+# caller puts the board in SAIL_EDL first.
+[devices."/dev/serial/by-id/usb-FTDI_RIDE_MICRO_4.0_FTAFIF1Q-if00-port0".hooks]
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/iq9-evk.board {image}"
+
+# fio: UNO Q (Bughopper DK0HEVIC)
+[devices."/dev/serial/by-id/usb-Arduino_Bughopper_DK0HEVIC-if00-port0".hooks]
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/unoq.board --device {device} {image}"
+
+# fio: Nord IQ10 RRD (SA8797P, Bantam IQ10RRDXXBANTAMTDC000034VG8). if02 is the
+# AP console, if03 SAIL. The hook writes UFS through the QDL device whose serial
+# is in /exports/nord-flash/edl-serial; the caller puts the board in EDL first
+# and normal_boots it afterwards. Image kinds are in its board file.
+[devices."/dev/serial/by-id/usb-FTDI_IQ10_UART-SPI_AR40BYP4AU-if00-port0".hooks]
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/nord-rrd.board {image}"
+
+[devices."/dev/serial/by-id/usb-FTDI_RIDE_SX_8x87_UART_AI51BCFO7K-if00-port0".hooks]
+flash = "/usr/local/libexec/conminer/hooks/qdl-flash --board /etc/conminer/site.d/flash/seca-ride.board --device {device} {image}"

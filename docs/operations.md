@@ -75,6 +75,10 @@ and `./cm build-id` does not hash it, so nodes with different site files still
 report the same build for the same source. A change to a site file takes
 effect when the services restart (`./cm up`).
 
+A copy of every node's site directory is tracked in `sites/<node>/`
+(sites/README.md), so the hooks and board files each node runs are on record;
+refresh it whenever a node's `site.d` changes.
+
 ## Health
 
     curl -s localhost:8080/healthz          # dashd

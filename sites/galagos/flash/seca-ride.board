@@ -1,0 +1,29 @@
+# SecaAU RIDE SX (SA8787P, conminer target 2.4), UFS. The loaders are the
+# SecaAU.LE.1.1-00025.01 devprg set; no fleet manifest covers them yet, so every
+# image directory carries its own programmer, listed in its SHA256SUMS.
+# qdl runs --skip-reset: the caller boots the board afterwards.
+stage /exports/seca-flash
+storage ufs
+runtime runtime qdl-v2.8-46-g657f12f
+fastboot_runtime fbruntime fastboot-34.0.5-debian
+fastboot_serial_file fastboot-serial
+programmer qsahara_device_programmer.xml
+reset no
+debug yes
+console /dev/serial/by-id/usb-FTDI_RIDE_SX_8x87_UART_AI51BCFO7K-if00-port0
+
+ref read SECAREAD-[A-Za-z0-9._-]+ own-programmer
+ref kind SECAFP-[0-9]{6}-[0-9]{6} own-programmer
+ref parts SECARESTORE-[A-Za-z0-9._-]+ own-programmer
+ref xml SECA-STOCK-[A-Za-z0-9._-]+ own-programmer
+# U-Boot fastboot on the Bantam FASTBOOT_MD strap (serial = U-Boot serial#)
+ref fastboot-boot SECABOOT-[A-Za-z0-9._-]+
+
+# LUN/label from this board GPT read 2026-11-10 (SECAREAD-gpt-20261110).
+# The first kind is the default when a directory has no flash-kind.txt.
+kind fip fip.elf 4/uefi_a 5/uefi_b
+kind tz tz.mbn 4/tz_a 5/tz_b
+kind boot-chain tz.mbn 4/tz_a 5/tz_b
+kind boot-chain fip.elf 4/uefi_a 5/uefi_b
+max_bytes tz.mbn 10485760
+max_bytes fip.elf 10485760

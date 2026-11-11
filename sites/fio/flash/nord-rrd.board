@@ -1,0 +1,27 @@
+# Nord IQ10 RRD (SA8797P), UFS, 4 KiB sectors. Layout after a NORDIMG or
+# NORD-STOCK full set (GPT read back 2026-11-08, NORDREAD-rrd-gpt-after-nordimg):
+# both slots of tz, uefi, uefi_dtb and apdp on LUN 4, efi on LUN 0. The board's
+# original automotive layout (B slots on LUN 5) is kept as .bak-ridemap; a full
+# set rewrites the GPT, so re-read it and --check --gpt after every full flash.
+# qdl runs --skip-reset: the caller normal_boots the board afterwards.
+stage /exports/nord-flash
+storage ufs
+runtime runtime qdl-v2.8-46-g657f12f
+firehose firehose firehose-6c8cfa6d71fc
+programmer qsahara_device_programmer.xml
+reset no
+debug yes
+
+ref kind NORDFP-[0-9]{6}-[0-9]{6}|NORDPAIR-[a-f0-9]{12}
+ref xml NORD-STOCK-[A-Za-z0-9._-]+ own-programmer
+ref xml NORDIMG-[A-Za-z0-9._-]+
+ref read NORDREAD-[A-Za-z0-9._-]+
+
+kind fip fip.elf 4/uefi_a 4/uefi_b
+kind tz tz.mbn 4/tz_a 4/tz_b
+kind boot-chain tz.mbn 4/tz_a 4/tz_b
+kind boot-chain fip.elf 4/uefi_a 4/uefi_b
+kind efi efi.bin 0/efi
+kind apdp apdp.mbn 4/apdp_a 4/apdp_b
+kind uefi-dtb uefi_dtbs.elf 4/uefi_dtb_a 4/uefi_dtb_b
+max_bytes apdp.mbn 65536

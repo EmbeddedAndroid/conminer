@@ -1,0 +1,16 @@
+# Eliza CQ7790S MTP, UFS. qdl resets the board when its session ends.
+stage /exports/eliza-flash
+storage ufs
+runtime runtime qdl-v2.8-46-g657f12f
+firehose firehose firehose-766d2198da25
+fastboot_runtime fbruntime fastboot-34.0.5-debian
+fastboot_serial_file fastboot-serial
+programmer prog_firehose_ddr.elf prog_firehose*.elf prog_*.elf *devprg*.melf
+reset yes
+
+# Stock and partial sets have always been flashed with the firehose
+# programmer; read-backs carry their own.
+ref xml ELIZA-STOCK-[A-Za-z0-9._-]+ firehose-programmer
+ref xml-or-parts ELIZAFP-[0-9]{6}-[0-9A-Za-z-]+ firehose-programmer
+ref fastboot-boot ELIZABOOT-[A-Za-z0-9._-]+
+ref read ELIZAREAD-[A-Za-z0-9._-]+ own-programmer

@@ -1,0 +1,21 @@
+# Arduino UNO Q (Bughopper console), eMMC, 512-byte sectors. Images are
+# staged in work/ and named by digest: v1:<efi|rootfs>:<sha256>:<file>.
+# qdl runs --skip-reset; the caller power-cycles and checks the fingerprint.
+stage /exports/unoq-flash
+storage emmc
+sector_bytes 512
+runtime runtime qdl-v2.8-46-g657f12f
+firehose firehose firehose-1eb4437c5265
+programmer prog_firehose_ddr.elf
+reset no
+timeout_s 240
+console /dev/serial/by-id/usb-Arduino_Bughopper_DK0HEVIC-if00-port0
+digest_dir work
+
+ref digest v1:[a-z0-9_]+:[0-9a-f]{64}:[A-Za-z0-9_.-]+
+
+# efi must fill the partition. rootfs is written by label; its readback window
+# is pinned to where the current GPT places it, so a moved partition fails the
+# digest instead of verifying the wrong sectors.
+digest efi 0/efi whole exact 536870912
+digest rootfs 0/rootfs 0/2306184 max 1073741824

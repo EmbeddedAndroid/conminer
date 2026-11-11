@@ -1,0 +1,3 @@
+# xen-cil 2026-11-08 (Tyler OK via brain): raw send for Xen debug keys on the RRD console.
+[runner]
+allow_raw_send = true

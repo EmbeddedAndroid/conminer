@@ -1,0 +1,15 @@
+# NordAU RIDE SX (SA8797P, conminer target 2.2), SAIL SPI-NOR in SS-EDL
+# (boot_mode BOOT_SS_EDL). 32 MiB, 4 KiB sectors, one physical partition.
+# Every image directory carries its own SS programmer (the release spinor/
+# loaders), listed in its SHA256SUMS. qdl runs --skip-reset.
+stage /exports/nord-flash
+storage spinor
+# SS-EDL presents the same QUSB serial as MD-EDL (50C04084, read 2026-11-11)
+edl_serial_file edl-serial-ride
+runtime runtime qdl-v2.8-46-g657f12f
+programmer qsahara_device_programmer.xml
+reset no
+debug yes
+
+ref xml NORDSPI-[A-Za-z0-9._-]+ own-programmer
+ref read NORDSPIREAD-[A-Za-z0-9._-]+ own-programmer

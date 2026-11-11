@@ -1,0 +1,109 @@
+#!/bin/sh
+set -eu
+umask 077
+
+work=/work
+host_work=/home/fio/sirocco-unoq
+qdl_image=sha256:b1740849809ec14dc3d64382311465fcd246d6ba2c2a3f7137136dc53a36dfa5
+programmer_sha=c3e8a2d48b31751293f3788a021596bd45dd60b034127c6e032325c43fa3ef54
+console=/dev/serial/by-id/usb-Arduino_Bughopper_DK0HEVIC-if00-port0
+serial=E1F9B69A
+efi_bytes=536870912
+# The GPT this board carries since the Sep 1 package places rootfs here. The
+# write resolves the label; the readback window is pinned, so a moved
+# partition fails the digest instead of verifying the wrong sectors.
+rootfs_start=2306184
+rootfs_max_bytes=1073741824
+container=conminer-unoq-qdl
+
+fail() { printf 'UNOQ_FLASH_ERROR: %s\n' "$*" >&2; exit 1; }
+docker_cli() {
+    /lib64/ld-linux-x86-64.so.2 /usr/local/libexec/docker-host \
+        --host unix:///var/run/docker.sock "$@"
+}
+digest() { sha256sum "$1" | cut -d ' ' -f 1; }
+
+[ "$#" = 2 ] || fail 'expected image reference and canonical console'
+[ "$2" = "$console" ] || fail 'wrong console'
+case "$1" in
+    v1:efi:*) target=efi; rest=${1#v1:efi:} ;;
+    v1:rootfs:*) target=rootfs; rest=${1#v1:rootfs:} ;;
+    *) fail 'expected v1:efi:<sha256>:<image-basename> or v1:rootfs:<sha256>:<image-basename>' ;;
+esac
+expected=${rest%%:*}
+name=${rest#*:}
+[ "${#expected}" = 64 ] || fail 'digest must have 64 lowercase hex characters'
+case "$expected" in *[!0-9a-f]*) fail 'invalid digest' ;; esac
+case "$name" in
+    ''|.*|*[!a-zA-Z0-9_.-]*) fail 'invalid image basename' ;;
+esac
+[ "$name" != prog_firehose_ddr.elf ] || fail 'programmer is not an OS image'
+[ -f "$work/$name" ] && [ ! -L "$work/$name" ] || fail 'missing or symlink image'
+bytes=$(stat -c %s "$work/$name")
+if [ "$target" = efi ]; then
+    [ "$bytes" = "$efi_bytes" ] || fail 'EFI image must fill exactly 512 MiB'
+    window=0/efi
+else
+    [ "$bytes" -gt 0 ] && [ "$bytes" -le "$rootfs_max_bytes" ] \
+        || fail 'rootfs image must be non-empty and at most 1 GiB'
+    [ $((bytes % 512)) = 0 ] || fail 'rootfs image must be whole 512-byte sectors'
+    window="0/$rootfs_start+$((bytes / 512))"
+fi
+[ "$(digest "$work/$name")" = "$expected" ] || fail 'image digest mismatch'
+[ -f "$work/prog_firehose_ddr.elf" ] && [ ! -L "$work/prog_firehose_ddr.elf" ] \
+    || fail 'missing or symlink programmer'
+[ "$(digest "$work/prog_firehose_ddr.elf")" = "$programmer_sha" ] \
+    || fail 'programmer digest mismatch'
+[ "$(docker_cli image inspect "$qdl_image" --format '{{.Id}}')" = "$qdl_image" ] \
+    || fail 'pinned QDL image is unavailable'
+
+mkdir -p "$work/conminer-flash"
+exec 9>"$work/conminer-flash/lock"
+flock -n 9 || fail 'another UnoQ flash hook is active'
+[ -z "$(docker_cli ps -q --filter ancestor="$qdl_image")" ] \
+    || fail 'an existing QDL container is active'
+
+job=$(mktemp -d "$work/conminer-flash/run-XXXXXXXX")
+job_name=${job##*/}
+# QDL reads a private, validated snapshot, not a staging path being replaced.
+cp --reflink=auto "$work/$name" "$job/$target.bin"
+cp "$work/prog_firehose_ddr.elf" "$job/prog_firehose_ddr.elf"
+[ "$(digest "$job/$target.bin")" = "$expected" ] || fail 'snapshot digest mismatch'
+[ "$(digest "$job/prog_firehose_ddr.elf")" = "$programmer_sha" ] \
+    || fail 'programmer changed during snapshot'
+printf 'image_sha256=%s\ncontainer=%s\ntarget=%s\nwindow=%s\n' \
+    "$expected" "$qdl_image" "$target" "$window" > "$job/inputs.txt"
+printf 'UNOQ_FLASH_EVIDENCE=%s/conminer-flash/%s\n' "$host_work" "$job_name"
+
+run_qdl() {
+    # The timeout lives in the container, so a lost MCP connection cannot
+    # leave a detached Docker worker running indefinitely.
+    docker_cli run --rm --init --name "$container" --network none \
+        --memory=256m --memory-swap=256m --cpus=1 --privileged \
+        -v /dev/bus/usb:/dev/bus/usb \
+        -v "$host_work/conminer-flash/$job_name:/work:ro" -w /work \
+        --entrypoint /usr/bin/timeout "$qdl_image" \
+        --signal=TERM --kill-after=10s 240s /usr/local/bin/qdl \
+        -R --serial "$serial" -s emmc prog_firehose_ddr.elf "$@"
+}
+
+if run_qdl write "0/$target" "$target.bin" > "$job/write.log" 2>&1; then
+    printf 'UNOQ_FLASH_WRITE=0\n'
+else
+    status=$?
+    printf 'UNOQ_FLASH_WRITE=%s\n' "$status"
+    fail "QDL write failed; inspect $host_work/conminer-flash/$job_name/write.log"
+fi
+if run_qdl sha256 "$window" > "$job/verify.log" 2>&1; then
+    printf 'UNOQ_FLASH_READBACK=0\n'
+else
+    status=$?
+    printf 'UNOQ_FLASH_READBACK=%s\n' "$status"
+    fail "QDL readback failed; inspect $host_work/conminer-flash/$job_name/verify.log"
+fi
+# Accept one standalone digest from device readback, never a filename or echo.
+actual=$(tr -d '\r' < "$job/verify.log" | awk \
+    'length($0) == 64 && $0 !~ /[^0-9a-fA-F]/ { print tolower($0) }')
+[ "$actual" = "$expected" ] || fail 'device readback digest mismatch or ambiguous result'
+printf 'UNOQ_FLASH_VERIFIED_SHA256=%s\n' "$actual"
+printf 'UNOQ_FLASH_RESET=not_requested; use conminer power then verify the running fingerprint\n'

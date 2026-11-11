@@ -1,0 +1,17 @@
+# IQ-9 EVK (QCS9075) SAIL NOR, 4 KiB sectors; windows from this board's NOR
+# GPT. The caller puts the board in SAIL_EDL; qdl resets it when it ends.
+stage /exports/iq9-flash
+storage spinor
+sector_bytes 4096
+runtime runtime qdl-v2.8-46-g657f12f
+firehose firehose firehose-e1d1fcecd2e5
+programmer prog_firehose_ddr.elf
+reset yes
+nor_payload sail_hyp.bin
+
+ref window-write SAILZ-[0-9]{1,6}|IQ9SAIL-[0-9a-f]{12} firehose-programmer
+ref window-read IQ9READ-[A-Za-z0-9._-]{1,64} firehose-programmer
+
+window SAIL_HYP 0/7+225 rw
+window SAIL_HYP_BKUP 0/1781+225 rw
+window FULL 0/0+65536 r
